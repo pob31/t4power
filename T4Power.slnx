@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/T4Power.Core/T4Power.Core.csproj" />
+    <Project Path="src/T4Power/T4Power.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/T4Power.Tests/T4Power.Tests.csproj" />
+  </Folder>
+</Solution>

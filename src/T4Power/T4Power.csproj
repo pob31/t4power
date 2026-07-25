@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- WinForms is here only for NotifyIcon: the tray icon has no WPF equivalent,
+         and taking it from the framework avoids an external tray package. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>T4Power</RootNamespace>
+    <AssemblyName>T4Power</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- One exe, several modes (tray UI, service, CLI), so we need our own entry point.
+         Leaving App.xaml as ApplicationDefinition would make the WPF targets generate a
+         competing Main. -->
+    <StartupObject>T4Power.Program</StartupObject>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+
+    <Version>0.1.0</Version>
+    <Product>T4Power</Product>
+    <Description>Power and clock manager for NVIDIA GPUs (Tesla T4)</Description>
+  </PropertyGroup>
+
+  <!-- App.xaml needs no explicit item: with EnableDefaultApplicationDefinition false it is
+       picked up by the SDK's default Page glob, which is exactly what we want. -->
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
+    <!-- ServiceController, for querying and waiting on the service during install/uninstall. -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\T4Power.Core\T4Power.Core.csproj" />
+  </ItemGroup>
+
+</Project>

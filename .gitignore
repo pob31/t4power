@@ -1,0 +1,38 @@
+## Build output
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+artifacts/
+publish/
+
+## Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.csproj.user
+
+## NuGet
+*.nupkg
+*.snupkg
+packages/
+!packages/build/
+
+## Test / coverage
+[Tt]est[Rr]esult*/
+coverage*.json
+coverage*.xml
+*.coverage
+
+## OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+## Local scratch
+scratch/
+*.local.json

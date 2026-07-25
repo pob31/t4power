@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>T4Power.Core</RootNamespace>
+    <AssemblyName>T4Power.Core</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!-- No PackageReference for named-pipe ACLs: NamedPipeServerStreamAcl.Create() is part of
+       the framework for net10.0-windows. (The NamedPipeServerStream ctor taking PipeSecurity
+       is still gone, so the Acl helper is what has to be used.) -->
+
+</Project>
