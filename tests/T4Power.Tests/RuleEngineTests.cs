@@ -327,6 +327,44 @@ public class RuleEngineTests
     }
 
     [Fact]
+    public void Concurrent_evaluation_does_not_corrupt_the_hysteresis_state()
+    {
+        // Regression: the service evaluates on a 1 s timer, and IPC handlers evaluate directly
+        // so a client sees its change at once - so this genuinely runs on two threads. The
+        // hysteresis state is a Dictionary, and writing one concurrently can corrupt it into
+        // spinning forever. In the field that froze the service mid-session: the last decision
+        // stuck, and the GPU stayed pinned at Max long after the watched app had exited.
+        var engine = new RuleEngine();
+        var config = Config();
+
+        var exceptions = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+
+        Parallel.For(0, 8, worker =>
+        {
+            try
+            {
+                for (var i = 0; i < 400; i++)
+                {
+                    // Alternate the condition so rules keep writing their timestamps.
+                    var busy = (worker + i) % 2 == 0;
+                    engine.Evaluate(config, Telemetry(pids: busy ? [1u] : null), NothingRunning);
+                    if (i % 50 == 0) engine.Reset(config.Uuid);
+                }
+            }
+            catch (Exception ex)
+            {
+                exceptions.Add(ex);
+            }
+        });
+
+        Assert.Empty(exceptions);
+
+        // Still functional afterwards, not left in a wedged state.
+        var after = engine.Evaluate(config, Telemetry(pids: [1]), NothingRunning);
+        Assert.Equal(Profile.Max, after.Desired?.ProfileName);
+    }
+
+    [Fact]
     public void Hysteresis_state_is_tracked_per_gpu()
     {
         var clock = new TestClock();

@@ -76,10 +76,23 @@ public sealed class RuleEngine
     readonly Dictionary<string, Dictionary<int, DateTimeOffset>> _lastTrue =
         new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// The engine carries mutable hysteresis state across calls, so it is not free-threaded.
+    /// Callers are expected to serialise, but guarding here too means a caller that gets it
+    /// wrong sees contention rather than a corrupted Dictionary — which manifests as the engine
+    /// spinning forever and freezing the last decision in place, not as a clean exception.
+    /// </summary>
+    readonly object _gate = new();
+
     public RuleEngine(Func<DateTimeOffset>? clock = null) =>
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
 
     public RuleDecision Evaluate(GpuConfig config, GpuTelemetry telemetry, IReadOnlySet<string> runningProcesses)
+    {
+        lock (_gate) return EvaluateCore(config, telemetry, runningProcesses);
+    }
+
+    RuleDecision EvaluateCore(GpuConfig config, GpuTelemetry telemetry, IReadOnlySet<string> runningProcesses)
     {
         var now = _clock();
 
@@ -221,5 +234,8 @@ public sealed class RuleEngine
     };
 
     /// <summary>Drops hysteresis state for a GPU, e.g. after its config is edited.</summary>
-    public void Reset(string uuid) => _lastTrue.Remove(uuid);
+    public void Reset(string uuid)
+    {
+        lock (_gate) _lastTrue.Remove(uuid);
+    }
 }

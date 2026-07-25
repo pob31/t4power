@@ -30,13 +30,30 @@ public sealed class GpuManager : IDisposable
     readonly IProcessSource _processes;
     readonly FileLog _log;
     readonly Func<DateTimeOffset> _clock;
+
+    /// <summary>Guards the small pieces of shared state read by IPC responses.</summary>
     readonly object _gate = new();
+
+    /// <summary>
+    /// Serialises every operation that evaluates rules or writes to the GPU.
+    ///
+    /// <see cref="Tick"/> runs on the service's timer, but the IPC handlers call it directly too
+    /// so a client sees its change immediately — so it genuinely runs on two threads. It mutates
+    /// plain dictionaries (applied state, and the rule engine's hysteresis timestamps), and a
+    /// Dictionary written concurrently can corrupt and spin forever. That is not theoretical:
+    /// it wedged the service mid-session, freezing the last decision so the GPU stayed pinned
+    /// at Max after the watched app had exited.
+    ///
+    /// Monitor is re-entrant, so a handler holding this can still call Tick.
+    /// </summary>
+    readonly object _tick = new();
 
     readonly Dictionary<string, AppliedState> _applied = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, GpuTelemetry> _lastTelemetry = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, RuleDecision> _lastDecision = new(StringComparer.OrdinalIgnoreCase);
 
     AppConfig _config;
+    bool _disposed;
 
     public GpuManager(
         NvmlSession session,
@@ -78,6 +95,11 @@ public sealed class GpuManager : IDisposable
     /// </summary>
     public void KickStuckPStates()
     {
+        lock (_tick) KickStuckPStatesCore();
+    }
+
+    void KickStuckPStatesCore()
+    {
         if (!_config.KickStuckPState) return;
 
         foreach (var device in ManagedDevices())
@@ -118,20 +140,35 @@ public sealed class GpuManager : IDisposable
     /// </summary>
     public void RestoreAllDefaults()
     {
-        foreach (var device in ManagedDevices())
+        lock (_tick)
         {
-            _log.Info($"restoring {device.Info.Name} to defaults " +
-                      $"({device.Info.DefaultPowerLimitW:0.#} W, clocks unlocked)");
-            device.RestoreDefaults();
-            _applied.Remove(device.Uuid);
+            if (_disposed) return;
+
+            foreach (var device in ManagedDevices())
+            {
+                _log.Info($"restoring {device.Info.Name} to defaults " +
+                          $"({device.Info.DefaultPowerLimitW:0.#} W, clocks unlocked)");
+                device.RestoreDefaults();
+                _applied.Remove(device.Uuid);
+            }
         }
     }
 
     // ---- the tick --------------------------------------------------------------------
 
-    /// <summary>Reads telemetry, evaluates rules, and applies any change. Called once per poll.</summary>
+    /// <summary>
+    /// Reads telemetry, evaluates rules, and applies any change. Called once per poll, and also
+    /// directly by IPC handlers so a client sees its change take effect immediately.
+    /// </summary>
     public void Tick()
     {
+        lock (_tick) TickCore();
+    }
+
+    void TickCore()
+    {
+        if (_disposed) return;   // shutdown began while this tick was queued
+
         var running = _processes.GetRunningNames();
         var now = _clock();
 
@@ -243,7 +280,10 @@ public sealed class GpuManager : IDisposable
         _ = token;
         try
         {
-            return Task.FromResult(Handle(request));
+            // Held across the whole handler, not just its inner Tick: the mutating commands
+            // read config, edit it and re-evaluate, and that sequence must not interleave with
+            // the timer's own evaluation.
+            lock (_tick) return Task.FromResult(Handle(request));
         }
         catch (NvmlException ex)
         {
@@ -576,5 +616,18 @@ public sealed class GpuManager : IDisposable
         }
     }
 
-    public void Dispose() => _session.Dispose();
+    /// <summary>
+    /// Shuts down NVML. Takes the same lock as <see cref="Tick"/> so an in-flight evaluation
+    /// cannot be left calling into a library that has already been torn down — that race is
+    /// what produced "Uninitialized" errors during service shutdown.
+    /// </summary>
+    public void Dispose()
+    {
+        lock (_tick)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _session.Dispose();
+        }
+    }
 }

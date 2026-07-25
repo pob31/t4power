@@ -14,6 +14,25 @@ namespace T4Power.Service;
 /// </summary>
 internal static class ServiceInstaller
 {
+    /// <summary>
+    /// Install runs in a second, elevated process launched with the runas verb, and that process
+    /// gets its own console — so anything it prints is invisible to whoever started it. Mirroring
+    /// to the log file is the only way a failed install leaves a trace worth reading.
+    /// </summary>
+    static readonly Lazy<FileLog> Log = new(() => new FileLog());
+
+    static void Report(string message)
+    {
+        Console.Error.WriteLine(message);
+        Log.Value.Error($"install: {message}");
+    }
+
+    static void Note(string message)
+    {
+        Console.WriteLine(message);
+        Log.Value.Info($"install: {message}");
+    }
+
     public static int Run(CommandLineOptions options)
     {
         // Re-launch elevated if needed. The SID recorded for the pipe ACL must be the *original*
@@ -28,7 +47,7 @@ internal static class ServiceInstaller
     {
         if (!File.Exists(Paths.ExecutablePath))
         {
-            Console.Error.WriteLine($"error: cannot locate the T4Power executable at '{Paths.ExecutablePath}'");
+            Report($"error: cannot locate the T4Power executable at '{Paths.ExecutablePath}'");
             return ExitCode.Failed;
         }
 
@@ -63,7 +82,7 @@ internal static class ServiceInstaller
                 $"start= auto DisplayName= \"T4Power GPU Manager\" obj= LocalSystem");
             if (create != 0)
             {
-                Console.Error.WriteLine("error: failed to create the service (see sc.exe output above)");
+                Report($"error: sc.exe create failed with exit code {create}");
                 return ExitCode.Failed;
             }
 
@@ -79,8 +98,7 @@ internal static class ServiceInstaller
 
         if (!WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(20)))
         {
-            Console.Error.WriteLine(
-                $"warning: the service did not report Running in time. Check {Paths.LogFile}");
+            Report($"error: the service did not report Running within 20s. Check {Paths.LogFile}");
             return ExitCode.Failed;
         }
 
@@ -150,9 +168,16 @@ internal static class ServiceInstaller
             // the new exe. Nothing user-owned lives here - config and logs are under ProgramData.
             if (Directory.Exists(Paths.InstallDirectory) && !ClearDirectory(Paths.InstallDirectory))
             {
-                Console.Error.WriteLine(
-                    "error: could not clear the install directory. Is T4Power still running? " +
-                    "Close the tray icon and try again.");
+                // "Access denied" here almost always means the image is still mapped by a running
+                // process — Windows refuses to delete a running executable. Name the likely
+                // culprit rather than leaving the user to guess.
+                Report($"""
+                    error: could not replace the files in {Paths.InstallDirectory}.
+
+                    A T4Power process is most likely still running. Check for a tray icon and exit
+                    it, then try again. If it was started elevated, it must be closed elevated:
+                        taskkill /IM T4Power.exe /F
+                    """);
                 return null;
             }
 
@@ -172,12 +197,12 @@ internal static class ServiceInstaller
                 copied++;
             }
 
-            Console.WriteLine($"Installed {copied} file(s) to {Paths.InstallDirectory}");
+            Note($"Installed {copied} file(s) to {Paths.InstallDirectory}");
             return Paths.InstalledExecutable;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine($"error: could not copy files to {Paths.InstallDirectory}: {ex.Message}");
+            Report($"error: could not copy files to {Paths.InstallDirectory}: {ex.Message}");
             return null;
         }
     }
@@ -202,7 +227,7 @@ internal static class ServiceInstaller
             {
                 if (attempt >= attempts)
                 {
-                    Console.Error.WriteLine($"error: {what} is still locked after {attempts} attempts: {ex.Message}");
+                    Report($"error: could not replace {what} after {attempts} attempts: {ex.Message}");
                     return false;
                 }
                 Thread.Sleep(250);
@@ -254,7 +279,7 @@ internal static class ServiceInstaller
             using var process = Process.Start(start);
             if (process is null)
             {
-                Console.Error.WriteLine("error: could not start the elevated helper");
+                Report("error: could not start the elevated helper");
                 return ExitCode.Failed;
             }
 
@@ -263,9 +288,8 @@ internal static class ServiceInstaller
         }
         catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
-            Console.Error.WriteLine(
-                "error: elevation was declined. Installing the service needs administrator rights once; " +
-                "after that, everyday use does not.");
+            Report("error: elevation was declined. Installing the service needs administrator rights " +
+                   "once; after that, everyday use does not.");
             return ExitCode.PermissionDenied;
         }
     }
