@@ -136,6 +136,7 @@
          and wrap/trim to fit. Any other value hands the content infinite width to lay out in. -->
     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
                   HorizontalScrollBarVisibility="Disabled" Padding="14,12">
+      <StackPanel>
       <ItemsControl ItemsSource="{Binding Gpus}">
         <ItemsControl.ItemTemplate>
           <DataTemplate>
@@ -316,6 +317,154 @@
           </DataTemplate>
         </ItemsControl.ItemTemplate>
       </ItemsControl>
+
+      <!-- ============================ Motherboard fan control ============================ -->
+      <StackPanel Visibility="{Binding ShowFanSection, Converter={StaticResource BoolToVis}}">
+
+        <!-- Why fan control is not working, and what to do about it. Almost always PawnIO. -->
+        <Border Background="{StaticResource Card}" CornerRadius="8" Padding="16" Margin="0,0,0,14"
+                Visibility="{Binding FanControlAvailable, Converter={StaticResource NotBoolToVis}}">
+          <StackPanel>
+            <TextBlock Text="Fan control unavailable" Style="{StaticResource CardTitle}" />
+            <TextBlock Text="{Binding FanUnavailableReason}" Style="{StaticResource Body}"
+                       TextWrapping="Wrap" Margin="0,8,0,0" />
+            <TextBlock Style="{StaticResource Dim}" TextWrapping="Wrap" Margin="0,8,0,0"
+                       Text="Everything else works normally — fan control is an optional extra on top of GPU power and clock management." />
+          </StackPanel>
+        </Border>
+
+        <!-- Adoption. Nothing is ever driven until someone picks a header here. -->
+        <Border Background="{StaticResource Card}" CornerRadius="8" Padding="16" Margin="0,0,0,14"
+                Visibility="{Binding ShowFanAdoption, Converter={StaticResource BoolToVis}}">
+          <StackPanel>
+            <TextBlock Text="Motherboard fan headers" Style="{StaticResource CardTitle}" />
+            <TextBlock Style="{StaticResource Dim}" TextWrapping="Wrap" Margin="0,4,0,0"
+                       Text="Identify spins a header to full for ten seconds so you can hear which fan it is. Adopt only the one cooling the GPU — the rest should stay on their BIOS curves." />
+
+            <ItemsControl ItemsSource="{Binding AvailableFanChannels}" Margin="0,12,0,0">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border Background="#FF2E323B" CornerRadius="6" Padding="10" Margin="0,0,0,6">
+                    <DockPanel>
+                      <Button DockPanel.Dock="Right" Content="Adopt" Click="AdoptFan_Click"
+                              Margin="6,0,0,0"
+                              IsEnabled="{Binding DataContext.CanAdoptFan,
+                                          RelativeSource={RelativeSource AncestorType=Window}}" />
+                      <Button DockPanel.Dock="Right" Content="Identify" Click="IdentifyChannel_Click" />
+                      <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Name}" Style="{StaticResource Body}" />
+                        <TextBlock Text="{Binding Identifier}" Style="{StaticResource Dim}"
+                                   TextTrimming="CharacterEllipsis" />
+                      </StackPanel>
+                    </DockPanel>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <TextBlock Style="{StaticResource Dim}" TextWrapping="Wrap" Margin="0,2,0,0">
+              <Run Text="Adopting drives the header from" />
+              <Run Text="{Binding FanSourceGpuName, Mode=OneWay}" FontWeight="SemiBold"
+                   Foreground="{StaticResource Title}" />
+              <Run Text="and checks it responds before handing it over." />
+            </TextBlock>
+          </StackPanel>
+        </Border>
+
+        <!-- Adopted headers -->
+        <ItemsControl ItemsSource="{Binding Fans}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Background="{StaticResource Card}" CornerRadius="8" Padding="16" Margin="0,0,0,14">
+                <StackPanel>
+
+                  <TextBlock Text="{Binding Name}" Style="{StaticResource CardTitle}" />
+                  <TextBlock Text="{Binding Subtitle}" Style="{StaticResource Dim}"
+                             TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
+
+                  <UniformGrid Columns="4" Margin="0,14,0,0">
+                    <StackPanel>
+                      <TextBlock Text="{Binding DutyText}" Style="{StaticResource Metric}" />
+                      <TextBlock Text="duty" Style="{StaticResource Dim}" />
+                    </StackPanel>
+                    <StackPanel>
+                      <TextBlock Text="{Binding RpmText}" Style="{StaticResource Metric}" />
+                      <TextBlock Text="speed" Style="{StaticResource Dim}" />
+                    </StackPanel>
+                    <StackPanel>
+                      <TextBlock Text="{Binding SourceTempText}" Style="{StaticResource Metric}" />
+                      <TextBlock Text="source temperature" Style="{StaticResource Dim}" />
+                    </StackPanel>
+                    <StackPanel>
+                      <TextBlock Text="{Binding ModeText}" Style="{StaticResource Metric}" />
+                      <TextBlock Text="controlled by" Style="{StaticResource Dim}" />
+                    </StackPanel>
+                  </UniformGrid>
+
+                  <TextBlock Foreground="{StaticResource Warn}" FontSize="12" Margin="0,10,0,0"
+                             TextWrapping="Wrap"
+                             Text="This header never confirmed an RPM response, so it may not be the fan you meant. Use Identify to check."
+                             Visibility="{Binding IsUnverified, Converter={StaticResource BoolToVis}}" />
+
+                  <TextBlock Foreground="{StaticResource Warn}" FontSize="12" Margin="0,10,0,0"
+                             TextWrapping="Wrap"
+                             Text="This header is no longer present on the board. It is left on the BIOS curve."
+                             Visibility="{Binding Present, Converter={StaticResource NotBoolToVis}}" />
+
+                  <Border Background="#FF2E323B" CornerRadius="6" Padding="12" Margin="0,14,0,0">
+                    <StackPanel>
+                      <TextBlock Text="{Binding Reason}" TextWrapping="Wrap" Style="{StaticResource Body}" />
+                      <TextBlock Text="{Binding OverrideExpiryText}" Style="{StaticResource Dim}" Margin="0,3,0,0"
+                                 Visibility="{Binding HasOverrideExpiry, Converter={StaticResource BoolToVis}}" />
+                    </StackPanel>
+                  </Border>
+
+                  <!-- The curve. Drag a point to move it, double-click to add, right-click to
+                       remove. Commits happen on gesture boundaries only — see FanCurveEditor. -->
+                  <TextBlock Text="Fan curve" Style="{StaticResource Body}" Margin="0,18,0,0" />
+                  <TextBlock Style="{StaticResource Dim}" TextWrapping="Wrap" Margin="0,2,0,6"
+                             Text="Drag a point to move it, double-click an empty spot to add one, right-click a point to remove it. The orange line is the GPU's temperature right now." />
+
+                  <Border Background="#FF1B1D22" CornerRadius="6" Padding="4">
+                    <ui:FanCurveEditor x:Name="Curve" Height="190"
+                                       Points="{Binding CurvePoints, Mode=OneWay}"
+                                       MinTemperatureC="{Binding MinTemperatureC, Mode=OneWay}"
+                                       MaxTemperatureC="{Binding MaxTemperatureC, Mode=OneWay}"
+                                       CurrentTemperatureC="{Binding CurrentTemperatureC, Mode=OneWay}"
+                                       CurrentPercent="{Binding CurrentPercent, Mode=OneWay}"
+                                       Loaded="CurveEditor_Loaded" />
+                  </Border>
+
+                  <!-- Manual duty. Same commit-on-release rule as the GPU sliders. -->
+                  <StackPanel Margin="0,16,0,0">
+                    <DockPanel>
+                      <TextBlock DockPanel.Dock="Right" Style="{StaticResource Dim}">
+                        <Run Text="{Binding DutySliderPercent, StringFormat={}{0:0}%, Mode=OneWay}" />
+                      </TextBlock>
+                      <TextBlock Text="Hold at a fixed duty" Style="{StaticResource Body}" />
+                    </DockPanel>
+                    <Slider Minimum="0" Maximum="100"
+                            Value="{Binding DutySliderPercent, Mode=TwoWay}"
+                            TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,4,0,0"
+                            Thumb.DragStarted="FanSlider_DragStarted"
+                            Thumb.DragCompleted="FanSlider_DragCompleted"
+                            KeyUp="FanSlider_KeyUp" />
+                  </StackPanel>
+
+                  <WrapPanel Margin="0,12,0,0">
+                    <Button Content="Back to the curve" Click="FanAuto_Click" />
+                    <Button Content="Identify (10 s at full)" Click="IdentifyFan_Click" />
+                    <Button Content="Hand back to BIOS" Click="ReleaseFan_Click" />
+                  </WrapPanel>
+
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+      </StackPanel>
+      </StackPanel>
     </ScrollViewer>
 
     <Border Grid.Row="2" Padding="14,8" Background="#FF2A2E36">

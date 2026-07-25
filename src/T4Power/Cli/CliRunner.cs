@@ -1,4 +1,5 @@
 using System.Text.Json;
+using T4Power.Core.Fans;
 using T4Power.Core.Ipc;
 using T4Power.Core.Model;
 using T4Power.Core.Nvml;
@@ -57,8 +58,228 @@ internal static class CliRunner
 
             Verb.Rules => await RulesAsync(o).ConfigureAwait(false),
 
+            // ---- fan control ----------------------------------------------------------
+
+            Verb.Fans => await FansAsync(o).ConfigureAwait(false),
+
+            Verb.AdoptFan => await SendAsync(o, new IpcRequest
+            {
+                Command = IpcCommands.AdoptFan,
+                Fan = o.FanSelector,
+                Gpu = o.GpuSelector,
+            }).ConfigureAwait(false),
+
+            Verb.ReleaseFan => await SendAsync(o, new IpcRequest
+            {
+                Command = IpcCommands.ReleaseFan,
+                Fan = o.FanSelector,
+            }).ConfigureAwait(false),
+
+            Verb.FanSet => await FanSetAsync(o).ConfigureAwait(false),
+
+            Verb.FanAuto => await SendAsync(o, new IpcRequest
+            {
+                Command = IpcCommands.ClearFanOverride,
+                Fan = o.FanSelector,
+            }).ConfigureAwait(false),
+
+            // "Which fan is this?" is just a loud override with a short leash. Defaults chosen so
+            // the bare verb is safe: full speed, and back on its own after ten seconds even if
+            // this process is killed the moment after sending it.
+            Verb.IdentifyFan => await SendAsync(o, new IpcRequest
+            {
+                Command = IpcCommands.SetFanOverride,
+                Fan = o.FanSelector,
+                FanPercent = o.Percent ?? 100,
+                DurationSeconds = (int)(o.Duration?.TotalSeconds ?? 10),
+            }).ConfigureAwait(false),
+
+            Verb.FanCurve => await FanCurveAsync(o).ConfigureAwait(false),
+
             _ => Usage(o),
         };
+    }
+
+    // ---- fan verbs --------------------------------------------------------------------
+
+    /// <summary>
+    /// Every writable header on the board, adopted or not. This is the discovery step: it is how
+    /// you find out which index the fan you care about is on, before adopting anything.
+    /// </summary>
+    static async Task<int> FansAsync(CommandLineOptions o)
+    {
+        try
+        {
+            var response = await new IpcClient()
+                .SendAsync(new IpcRequest { Command = IpcCommands.ListFans })
+                .ConfigureAwait(false);
+
+            if (!response.Ok)
+            {
+                Fail(o, response.Error ?? "the service reported a failure");
+                return response.Code;
+            }
+
+            if (o.Json)
+            {
+                var channels = response.FanChannels.ToDictionary(
+                    c => c.Identifier, StringComparer.OrdinalIgnoreCase);
+
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    timestampUtc = DateTimeOffset.UtcNow,
+                    available = response.FanHardware?.Available ?? false,
+                    reason = response.FanHardware?.Reason,
+                    headers = response.Fans.Select(f => new
+                    {
+                        identifier = f.ControlIdentifier,
+                        name = f.Name,
+                        chip = f.ChipName,
+                        index = f.Index,
+
+                        // Whether a header has a paired tachometer decides whether adoption can
+                        // verify it, so it belongs in the machine-readable output.
+                        rpmSensor = channels.GetValueOrDefault(f.ControlIdentifier)?.RpmSensorIdentifier,
+                        managed = f.Managed,
+                        verified = f.Verified,
+                        present = f.Present,
+                        readbackPercent = f.ReadbackPercent,
+                        rpm = f.Rpm,
+                        mode = f.Mode.ToString(),
+                        sourceGpuUuid = f.SourceGpuUuid,
+                        sourceTemperatureC = f.SourceTemperatureC,
+                        commandedPercent = f.CommandedPercent,
+                        source = f.Source.ToString(),
+                        reason = f.Reason,
+                    }),
+                }, Json));
+                return ExitCode.Ok;
+            }
+
+            if (response.FanHardware is { Available: false })
+            {
+                Console.WriteLine($"Fan control is unavailable: {response.FanHardware.Reason}");
+                return ExitCode.NotSupported;
+            }
+
+            if (response.Fans.Count == 0)
+            {
+                Console.WriteLine("No controllable fan headers were found.");
+                return ExitCode.Ok;
+            }
+
+            foreach (var chip in response.Fans.GroupBy(f => f.ChipName ?? "unknown chip"))
+            {
+                Console.WriteLine($"Fan headers on {chip.Key}");
+                Console.WriteLine();
+
+                foreach (var f in chip.OrderBy(f => f.Index))
+                {
+                    // A channel nobody has written to reports Undefined, which is a library
+                    // detail, not a state a user cares about — it means the BIOS still owns it.
+                    var owner = f.Mode == FanControlMode.Software ? "T4Power" : "BIOS";
+
+                    Console.WriteLine(
+                        $"  [{f.Index}] {f.Name,-9} {(f.ReadbackPercent is { } d ? $"{d,3:0}%" : "   -")} " +
+                        $"{(f.Rpm is { } rpm ? $"{rpm,5} RPM" : "    - RPM")}   {owner}");
+
+                    Console.WriteLine($"       {f.ControlIdentifier}");
+
+                    if (f.Managed)
+                    {
+                        Console.WriteLine($"       driven by {f.SourceGpuName ?? f.SourceGpuUuid}" +
+                                          (f.Verified ? "" : "   (unverified — RPM response never confirmed)"));
+                        Console.WriteLine($"       {f.Reason}");
+                    }
+
+                    Console.WriteLine();
+                }
+            }
+
+            Console.WriteLine("The last column is who owns each header right now.");
+            Console.WriteLine("Use --identify-fan <sel> to spin one up, then --adopt-fan <sel> --gpu <sel>.");
+            return ExitCode.Ok;
+        }
+        catch (Exception ex) when (ex is IpcClient.UnavailableException or IpcClient.AccessDeniedException)
+        {
+            // No NVML fallback here, unlike --status: reaching the SuperIO needs the driver and
+            // elevation, so without the service there is genuinely nothing to read.
+            Fail(o, ex.Message);
+            return ExitCode.ServiceUnavailable;
+        }
+    }
+
+    static Task<int> FanSetAsync(CommandLineOptions o)
+    {
+        if (o.Percent is null)
+        {
+            Fail(o, "nothing to set - give --percent");
+            return Task.FromResult(ExitCode.UsageError);
+        }
+
+        return SendAsync(o, new IpcRequest
+        {
+            Command = IpcCommands.SetFanOverride,
+            Fan = o.FanSelector,
+            FanPercent = o.Percent,
+            DurationSeconds = o.Duration is { } d ? (int)d.TotalSeconds : null,
+        });
+    }
+
+    /// <summary>
+    /// Shows a header's curve, or replaces its points. The headless way to configure fan control,
+    /// which is what lets the cutover from another fan app happen without waiting on the UI.
+    /// </summary>
+    static async Task<int> FanCurveAsync(CommandLineOptions o)
+    {
+        // Round-trip the stored config rather than inventing one, so the hysteresis settings, the
+        // panic temperature and the source GPU all survive a curve edit. Same reasoning as the
+        // UI's "manage this GPU" path, which reads the store for the same reason.
+        var stored = new ConfigStore().Load();
+        var fan = stored.Fans.FirstOrDefault(f => FanSelector.Matches(f, o.FanSelector));
+
+        if (fan is null)
+        {
+            Fail(o, $"no managed fan header matched '{o.FanSelector}' - adopt one first with --adopt-fan");
+            return ExitCode.UnknownGpu;
+        }
+
+        if (o.CurvePoints is null)
+        {
+            if (o.Json)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    identifier = fan.ControlIdentifier,
+                    name = fan.DisplayName,
+                    sourceGpuUuid = fan.SourceGpuUuid,
+                    minTemperatureC = fan.Curve.MinTemperatureC,
+                    maxTemperatureC = fan.Curve.MaxTemperatureC,
+                    minPercent = fan.Curve.MinPercent,
+                    maxPercent = fan.Curve.MaxPercent,
+                    panicTemperatureC = fan.PanicTemperatureC,
+                    points = fan.Curve.Points.Select(p => new { p.TemperatureC, p.Percent }),
+                    hysteresis = fan.Curve.Hysteresis,
+                }, Json));
+                return ExitCode.Ok;
+            }
+
+            Console.WriteLine($"{fan.DisplayName}  [{fan.ControlIdentifier}]");
+            Console.WriteLine($"  driven by      {fan.SourceGpuUuid}");
+            Console.WriteLine($"  curve          {string.Join(", ", fan.Curve.Points.Select(p => $"{p.TemperatureC:0.#}C:{p.Percent:0.#}%"))}");
+            Console.WriteLine($"  duty bounds    {fan.Curve.MinPercent:0.#}-{fan.Curve.MaxPercent:0.#}%");
+            Console.WriteLine($"  temp axis      {fan.Curve.MinTemperatureC:0.#}-{fan.Curve.MaxTemperatureC:0.#} C");
+            Console.WriteLine($"  response       up {fan.Curve.Hysteresis.ResponseTimeUpSeconds:0.#}s, down {fan.Curve.Hysteresis.ResponseTimeDownSeconds:0.#}s");
+            Console.WriteLine($"  hysteresis     +{fan.Curve.Hysteresis.HysteresisUpC:0.#} / -{fan.Curve.Hysteresis.HysteresisDownC:0.#} C");
+            Console.WriteLine($"  panic          full speed at or above {fan.PanicTemperatureC:0.#} C");
+            return ExitCode.Ok;
+        }
+
+        return await SendAsync(o, new IpcRequest
+        {
+            Command = IpcCommands.SetFanConfig,
+            FanConfig = fan with { Curve = fan.Curve with { Points = o.CurvePoints } },
+        }).ConfigureAwait(false);
     }
 
     /// <summary>Shows the auto-switch rules in priority order, plus the profiles they target.</summary>
@@ -267,6 +488,18 @@ internal static class CliRunner
 
             var reasons = string.Join(", ", t?.InterestingReasons() ?? []);
             if (reasons.Length > 0) Console.WriteLine($"  throttle: {reasons}");
+            Console.WriteLine();
+        }
+
+        foreach (var fan in response.Fans)
+        {
+            Console.WriteLine($"{fan.Name ?? fan.ControlIdentifier}  (fan)");
+            Console.WriteLine(
+                $"  {fan.ReadbackPercent:0.#}% duty" +
+                $"{(fan.Rpm is { } rpm ? $"   {rpm} RPM" : "")}" +
+                $"{(fan.SourceTemperatureC is { } temp ? $"   source {temp} C" : "")}");
+            Console.WriteLine($"  {fan.Reason}");
+            if (!fan.Present) Console.WriteLine("  this header is not currently present on the board");
             Console.WriteLine();
         }
     }

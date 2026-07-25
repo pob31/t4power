@@ -113,6 +113,22 @@ internal static class ServiceInstaller
             It will now apply your profiles at boot, before anyone logs in.
             The tray UI and CLI need no elevation from here on.
             """);
+
+        // Motherboard fan control is optional, so this is a note rather than a failure — but it
+        // is worth saying now, because the alternative is someone discovering it from a log file.
+        Console.WriteLine(PawnIoProbe.IsInstalled()
+            ? """
+
+              Motherboard fan control is available (PawnIO driver detected).
+              Run 'T4Power --fans' to see the headers, then --adopt-fan to drive one.
+              """
+            : $"""
+
+              Note: motherboard fan control is unavailable — the PawnIO driver is not installed.
+              GPU power and clock management are unaffected. To enable fan control, install
+              PawnIO from {PawnIoProbe.DownloadUrl} and restart the service.
+              """);
+
         return ExitCode.Ok;
     }
 
@@ -124,9 +140,11 @@ internal static class ServiceInstaller
             return ExitCode.Ok;
         }
 
-        // Stopping runs the worker's StopAsync, which restores default power limits and releases
-        // clock locks. Give it time to finish before deleting the service.
-        Console.WriteLine("Stopping the service (this restores default power limits and unlocks clocks)...");
+        // Stopping runs the worker's StopAsync, which restores default power limits, releases
+        // clock locks, and hands any adopted fan header back to the BIOS curve. Give it time to
+        // finish before deleting the service — a fan left under software control by a service
+        // that no longer exists would stay that way until the next reboot.
+        Console.WriteLine("Stopping the service (this restores GPU defaults and hands fan headers back to the BIOS)...");
         Run("sc.exe", $"stop {Paths.ServiceName}");
         WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(20));
 
@@ -138,7 +156,8 @@ internal static class ServiceInstaller
         }
 
         Console.WriteLine($"""
-            '{Paths.ServiceName}' removed. GPU defaults have been restored.
+            '{Paths.ServiceName}' removed. GPU defaults have been restored, and any fan header
+            T4Power was driving is back under BIOS control.
             Configuration was left in place at {Paths.ConfigFile} — delete it by hand if you want a clean slate.
             """);
         return ExitCode.Ok;

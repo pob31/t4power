@@ -10,6 +10,9 @@ public static class ExitCode
     public const int Ok = 0;
     public const int UsageError = 1;
     public const int ServiceUnavailable = 2;
+
+    /// <summary>Also returned for an unmatched fan selector — same class of mistake, and adding a
+    /// ninth code would break callers that already switch on this contract.</summary>
     public const int UnknownGpu = 3;
     public const int OutOfRange = 4;
     public const int PermissionDenied = 5;

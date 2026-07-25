@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Windows;
+using T4Power.Core.Fans;
 using T4Power.Core.Ipc;
 using T4Power.Core.Model;
 using WinForms = System.Windows.Forms;
@@ -18,6 +19,7 @@ internal sealed class TrayIcon : IDisposable
     readonly Func<MainWindow> _window;
 
     IReadOnlyList<GpuStateDto> _state = [];
+    IReadOnlyList<FanStatus> _fans = [];
     Icon? _current;
 
     public TrayIcon(ServiceLink link, Func<MainWindow> window)
@@ -40,9 +42,10 @@ internal sealed class TrayIcon : IDisposable
         _link.AvailabilityChanged += (_, _) => Refresh();
     }
 
-    void OnStateChanged(IReadOnlyList<GpuStateDto> state)
+    void OnStateChanged(IpcResponse response)
     {
-        _state = state;
+        _state = response.Gpus;
+        _fans = response.Fans;
         Refresh();
     }
 
@@ -73,6 +76,13 @@ internal sealed class TrayIcon : IDisposable
         var t = gpu.Telemetry;
         var text = $"{gpu.Name}\n{t?.PowerDrawW:0.0} W / {t?.PowerLimitW:0.#} W  ·  {t?.SmClockMhz} MHz  ·  {t?.TemperatureC} °C";
         if (gpu.ActiveProfile is not null) text += $"\nProfile: {gpu.ActiveProfile}";
+
+        // The fan is the whole point of the cooler mod, so it earns a tooltip line.
+        if (_fans.FirstOrDefault(f => f.SourceGpuUuid == gpu.Uuid) is { } fan)
+        {
+            text += $"\nFan: {fan.ReadbackPercent:0}%";
+            if (fan.Rpm is { } rpm) text += $"  ·  {rpm} RPM";
+        }
 
         // NotifyIcon.Text is capped at 63 characters on older shells; keep it safe.
         return text.Length > 127 ? text[..127] : text;

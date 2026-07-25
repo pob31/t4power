@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
+using T4Power.Core.Model;
 
 namespace T4Power.Cli;
 
@@ -18,6 +19,16 @@ public enum Verb
     Watch,
     Unwatch,
     Rules,
+
+    // Fan control.
+    Fans,
+    AdoptFan,
+    ReleaseFan,
+    FanSet,
+    FanAuto,
+    FanCurve,
+    IdentifyFan,
+
     Help,
     Invalid,
 }
@@ -54,6 +65,16 @@ public sealed record CommandLineOptions
     /// <summary>Executable names for the watchlist verbs.</summary>
     public IReadOnlyList<string> Match { get; init; } = [];
 
+    /// <summary>Fan header selector: full identifier, its trailing segment, an index, or part of
+    /// the name. Required by every fan verb except <see cref="Verb.Fans"/>.</summary>
+    public string? FanSelector { get; init; }
+
+    /// <summary>Duty for --fan-set and --identify-fan, 0-100.</summary>
+    public double? Percent { get; init; }
+
+    /// <summary>Curve points from --points, already parsed. Null means "show, do not set".</summary>
+    public IReadOnlyList<FanCurvePoint>? CurvePoints { get; init; }
+
     /// <summary>
     /// Internal: the SID to grant control-pipe access during install. Carried across the UAC
     /// elevation because by the time we are elevated the current user is an administrator, not
@@ -71,12 +92,13 @@ public static partial class CommandLine
         if (args.Length == 0) return new CommandLineOptions { Verb = Verb.TrayUi };
 
         var verb = Verb.Invalid;
-        string? gpu = null, profile = null, error = null, aclSid = null;
+        string? gpu = null, profile = null, error = null, aclSid = null, fan = null;
         var showWindow = false;
         var match = new List<string>();
-        double? power = null;
+        double? power = null, percent = null;
         ClockRequest? clocks = null;
         TimeSpan? duration = null;
+        IReadOnlyList<FanCurvePoint>? points = null;
         var json = false;
 
         for (var i = 0; i < args.Length; i++)
@@ -159,6 +181,65 @@ public static partial class CommandLine
                     verb = Verb.Rules;
                     break;
 
+                // ---- fan control ----------------------------------------------------
+                //
+                // Each verb takes its selector inline (--adopt-fan control/3) because that reads
+                // better than a separate --fan, but --fan is accepted too so the two styles can
+                // be mixed in scripts.
+
+                case "fans":
+                    verb = Verb.Fans;
+                    break;
+
+                case "adopt-fan":
+                    verb = Verb.AdoptFan;
+                    fan = Next("adopt-fan");
+                    break;
+
+                case "release-fan":
+                    verb = Verb.ReleaseFan;
+                    fan = Next("release-fan");
+                    break;
+
+                case "fan-set":
+                    verb = Verb.FanSet;
+                    fan = Next("fan-set");
+                    break;
+
+                case "fan-auto":
+                    verb = Verb.FanAuto;
+                    fan = Next("fan-auto");
+                    break;
+
+                case "fan-curve":
+                    verb = Verb.FanCurve;
+                    fan = Next("fan-curve");
+                    break;
+
+                case "identify-fan":
+                    verb = Verb.IdentifyFan;
+                    fan = Next("identify-fan");
+                    break;
+
+                case "fan":
+                    fan = Next("fan");
+                    break;
+
+                case "percent" or "duty":
+                    var pc = Next("percent");
+                    if (pc is not null)
+                    {
+                        if (double.TryParse(pc, NumberStyles.Float, CultureInfo.InvariantCulture, out var p))
+                            percent = p;
+                        else error ??= $"--percent expects 0-100, got '{pc}'";
+                    }
+                    break;
+
+                case "points":
+                    var pv = Next("points");
+                    if (pv is not null) points = ParsePoints(pv, ref error);
+                    break;
+
                 case "acl-sid":
                     aclSid = Next("acl-sid");
                     break;
@@ -185,9 +266,22 @@ public static partial class CommandLine
             Json = json,
             ShowWindow = showWindow,
             Match = match,
+            FanSelector = fan,
+            Percent = percent,
+            CurvePoints = points,
             AclSid = aclSid,
             Error = error,
         };
+    }
+
+    /// <summary>Defers to <see cref="FanCurve.TryParsePoints"/>, which lives in Core so it can be
+    /// tested without pulling the executable into the test project.</summary>
+    static IReadOnlyList<FanCurvePoint>? ParsePoints(string value, ref string? error)
+    {
+        if (FanCurve.TryParsePoints(value, out var points, out var why)) return points;
+
+        error ??= $"--points {why}";
+        return null;
     }
 
     /// <summary>Accepts <c>unlock</c>/<c>reset</c>, a range <c>300-900</c>, or a single value.</summary>
@@ -256,16 +350,31 @@ public static partial class CommandLine
               T4Power --install-service            Register the startup service (prompts for UAC)
               T4Power --uninstall-service          Remove it and restore GPU defaults
 
+            MOTHERBOARD FAN CONTROL          (needs the PawnIO driver — see the README)
+              T4Power --fans [--json]              Every fan header, with live RPM and duty
+              T4Power --identify-fan <sel> [--for 10s]
+                                                   Spin one up so you can hear which it is
+              T4Power --adopt-fan <sel> --gpu T4   Drive that header from that GPU's temperature
+              T4Power --fan-curve <sel> [--points "49.5:27,62.8:100"]
+                                                   Show the curve, or set it
+              T4Power --fan-set <sel> --percent 60 [--for 10m]
+              T4Power --fan-auto <sel>             Drop the manual duty, back to the curve
+              T4Power --release-fan <sel>          Hand it back to the BIOS and stop managing it
+
             OPTIONS
               --gpu <sel>     UUID, index, or part of the name. Default: all managed GPUs.
               --power <W>     Power limit in watts; clamped to what the GPU reports.
               --clocks <r>    '300-900', a single MHz value, or 'unlock'.
               --for <d>       Auto-revert after 30m / 2h / 90s. Enforced by the service, so
                               it still expires if the caller goes away.
+              --fan <sel>     Fan header: full identifier, 'control/3', an index, or part of
+                              the name. Unlike --gpu, it never means "all".
+              --percent <p>   Fan duty, 0-100; clamped to what the chip accepts.
+              --points <list> Curve as 'temp:percent' pairs, e.g. "49.5:27,62.8:100".
               --json          Machine-readable output; errors go to stderr as JSON.
 
             EXIT CODES
-              0 ok   1 usage   2 service unavailable   3 unknown gpu   4 out of range
+              0 ok   1 usage   2 service unavailable   3 unknown gpu or fan   4 out of range
               5 permission denied   6 not supported   7 nvml unavailable   8 failed
 
             T4Power {version}  Copyright (C) 2026 Pierre-Olivier Boulant

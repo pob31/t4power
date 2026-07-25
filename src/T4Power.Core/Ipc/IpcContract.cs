@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using T4Power.Core.Fans;
 using T4Power.Core.Model;
 using T4Power.Core.Rules;
 
@@ -36,6 +37,16 @@ public static class IpcCommands
     public const string SetGpuConfig = "set-gpu-config";
     public const string AddWatch = "add-watch";
     public const string RemoveWatch = "remove-watch";
+
+    // Fan control. There is deliberately no "identify this header" command: spinning a fan up so
+    // you can hear which one it is *is* an override with a short TTL, and giving it its own verb
+    // would mean a second path that reaches the chip with its own validation to get wrong.
+    public const string ListFans = "list-fans";
+    public const string AdoptFan = "adopt-fan";
+    public const string ReleaseFan = "release-fan";
+    public const string SetFanConfig = "set-fan-config";
+    public const string SetFanOverride = "set-fan-override";
+    public const string ClearFanOverride = "clear-fan-override";
 }
 
 /// <summary>
@@ -63,6 +74,26 @@ public sealed record IpcRequest
 
     /// <summary>Executable names for the watchlist commands.</summary>
     public IReadOnlyList<string> Match { get; init; } = [];
+
+    // ---- fan control -----------------------------------------------------------------
+
+    /// <summary>Fan selector: full control identifier, its trailing segment, an index, or a name
+    /// substring. Unlike <see cref="Gpu"/>, null matches nothing rather than everything.</summary>
+    public string? Fan { get; init; }
+
+    /// <summary>Duty for a manual fan override, 0-100. Clamped service-side to what the chip
+    /// accepts before it reaches any hardware.</summary>
+    public double? FanPercent { get; init; }
+
+    /// <summary>Replacement settings for one header, used by the curve editor.</summary>
+    public FanConfig? FanConfig { get; init; }
+}
+
+/// <summary>Whether fan control is working at all, and what to do about it if not.</summary>
+public sealed record FanHardwareInfo
+{
+    public bool Available { get; init; }
+    public string? Reason { get; init; }
 }
 
 /// <summary>One GPU as the service sees it: identity, live telemetry, and why it is where it is.</summary>
@@ -111,6 +142,25 @@ public sealed record IpcResponse
     public string? ServiceVersion { get; init; }
     public string? DriverVersion { get; init; }
     public IReadOnlyList<GpuStateDto> Gpus { get; init; } = [];
+
+    /// <summary>
+    /// Every fan header T4Power is driving, with live state and the reason for it.
+    ///
+    /// <see cref="FanStatus"/> and <see cref="FanChannel"/> go on the wire as-is rather than
+    /// through separate DTOs, the same way <see cref="GpuStateDto"/> carries
+    /// <see cref="Model.Profile"/> and <see cref="Rules.Rule"/> directly. Both are plain records
+    /// of primitives, and a parallel set of types would only be somewhere for the two to drift.
+    ///
+    /// These default to empty, so an old client talking to a new service ignores them and a new
+    /// client talking to an old service simply sees no fans.
+    /// </summary>
+    public IReadOnlyList<FanStatus> Fans { get; init; } = [];
+
+    /// <summary>Every writable header on the board, adopted or not. Populated by list-fans, which
+    /// is how a user finds out which index is the one they care about.</summary>
+    public IReadOnlyList<FanChannel> FanChannels { get; init; } = [];
+
+    public FanHardwareInfo? FanHardware { get; init; }
 
     /// <summary>Human-readable summary of what a mutating command actually did.</summary>
     public string? Message { get; init; }

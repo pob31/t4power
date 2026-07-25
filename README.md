@@ -108,6 +108,75 @@ display adapter just because it enumerated would be a nasty surprise.
 
 ---
 
+## Motherboard fan control
+
+The T4 is passively cooled. Fit an aftermarket cooler and its fan lands on a motherboard header,
+which means the thing keeping the card alive is controlled by something entirely separate from
+the thing managing the card. The usual fix is a second app plus a script that shuttles the GPU
+temperature across — which is exactly as fragile as it sounds, since the relay can stall, race,
+or feed a stale reading to a fan curve.
+
+T4Power reads that temperature in-process, on the same tick it already uses for the rule engine,
+and drives the header directly. One app, no relay.
+
+```powershell
+T4Power --fans                                  # every header, with live RPM and duty
+T4Power --identify-fan control/3 --for 10s      # spin one up so you can hear which it is
+T4Power --adopt-fan control/3 --gpu T4          # drive it from the T4's temperature
+T4Power --fan-curve control/3                   # show the curve
+T4Power --fan-curve control/3 --points "49.5:27,62.8:100"
+T4Power --fan-set control/3 --percent 60 --for 10m
+T4Power --fan-auto control/3                    # drop the manual duty, back to the curve
+T4Power --release-fan control/3                 # hand it back to the BIOS, stop managing it
+```
+
+The window has the same thing as a draggable curve, with a live marker showing where the GPU is.
+
+**No header is ever driven until you explicitly adopt one.** Adoption commands the header to full
+and checks the tachometer responds before committing, because the failure mode of a mistyped
+selector is quietly taking over the CPU pump.
+
+### Prerequisite: PawnIO
+
+Reaching a SuperIO chip means talking to legacy I/O ports, which needs a kernel driver. The
+traditional one, WinRing0, **cannot load when Memory Integrity (HVCI) is enabled** — it is on
+Microsoft's vulnerable-driver blocklist. LibreHardwareMonitor moved to
+[PawnIO](https://github.com/namazso/PawnIO.Setup/releases) for that reason, and so this needs it
+too. Install it once; T4Power starts the driver itself on each boot, since its start type is
+manual and nothing else will.
+
+Without PawnIO everything else works exactly as before — fan control is strictly additive, and
+the app says so rather than failing obscurely.
+
+### Set the BIOS curve for that header to Full Speed
+
+This is a safety requirement, not a tip.
+
+Whenever T4Power hands a header back — service stop, uninstall, lost GPU telemetry — the header
+reverts to what the BIOS programmed at POST. That fallback is only as safe as the BIOS curve
+behind it. Setting the header to Full Speed makes every hand-back unconditionally safe, and makes
+POST, a crash and a power cut safe for free, because the SuperIO is reinitialised from BIOS
+settings on every reset.
+
+The worst case then is a loud fan, rather than a cooked card.
+
+### How the curve behaves
+
+Duty is piecewise-linear between points and flat beyond the ends. Two independent mechanisms stop
+it chasing noise: a **hysteresis band** decides whether a reading counts as a change at all, and a
+**response time** decides how long that change must persist before it is acted on. Both are
+asymmetric by default — ramp up in 3 s, ramp down over 30 s — because heat is already happening
+when you see it, while a fan that chases every dip audibly hunts.
+
+Above a **panic temperature** (80 °C by default, below the thermal guard's 85 °C) the fan goes to
+full immediately, bypassing the curve, the smoothing *and* any manual override. Trying to move
+more air comes before clamping the card's clocks.
+
+If the GPU's temperature goes missing or stale, the header is handed back to the BIOS rather than
+driven on a guess.
+
+---
+
 ## Automation
 
 The CLI is a thin pipe client, so scripts, hotkeys and coding agents drive it unelevated:
@@ -145,9 +214,14 @@ dotnet publish src/T4Power -c Release -r win-x64 --self-contained true `
 .\publish\T4Power.exe --install-service    # one UAC prompt; copies to Program Files
 ```
 
-One self-contained ~73 MB exe, no runtime prerequisite. Uninstall with
-`--uninstall-service`, which stops the service, restores the default power limit and releases
-the clock lock.
+One self-contained exe, no runtime prerequisite. Uninstall with `--uninstall-service`, which
+stops the service, restores the default power limit, releases the clock lock and hands any
+adopted fan header back to the BIOS.
+
+Do **not** add `-p:PublishTrimmed=true`: LibreHardwareMonitor is reflection-heavy and would fail
+at runtime rather than at build time. After changing anything in the fan layer, test the
+*published single-file exe* and not just `dotnet run` — single-file is a different assembly load
+context, and `Assembly.Location` returns `""` inside a bundle.
 
 During development run `T4Power --service` in the foreground instead of installing — an
 installed service holds a lock on its own binaries. If an install fails with *access denied*
@@ -174,6 +248,42 @@ dotnet run --project tools/IconGen        # regenerate the application icon
   set `thermalGuardC` to `null` in `config.json` to disable it.
 - Logs at `C:\ProgramData\T4Power\logs\`, including install failures, which are otherwise
   invisible because the elevated installer gets its own console.
+
+### Fan control, honestly
+
+Fan headers deserve their own note, because a fan stuck at the wrong speed is worse than a GPU
+stuck at the wrong clock.
+
+| What happens | The header ends up | Covered by |
+|---|---|---|
+| Graceful stop, uninstall, OS shutdown | BIOS curve | code, deterministic |
+| Unhandled crash or `taskkill /F` | **holds its last duty** | the SCM restart actions (5 s) bring the service back and it resumes; the panic rule means a stale duty is a high one whenever the card was hot |
+| Service crashes on every start | BIOS curve | a header is only taken over once a *fresh* GPU temperature has been read |
+| BSOD, power cut, reset | BIOS curve | hardware — the SuperIO is reinitialised at POST |
+| Sleep/resume, or another app grabs the channel | reclaimed within a second | the control mode is read back each tick and rewritten if it is not ours |
+| GPU removed, driver reload, NVML failure | BIOS curve after 10 s | the sensor-timeout fail-safe |
+| PawnIO removed while a header is held | **holds its last duty until POST** | nothing — this one has no software remedy |
+
+The last row is the reason the BIOS Full Speed setting above is a requirement rather than advice.
+
+Commanded duty is clamped to what the chip reports it accepts before it is written, on the same
+principle as power limits: values arrive over the pipe and are treated as untrusted. A duty floor
+(20 % by default) keeps a blower above its stall threshold, since a fan reading 0 RPM is worse
+than a slow one.
+
+---
+
+## Third-party components
+
+- **[LibreHardwareMonitorLib](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)** —
+  motherboard sensor and fan control, used unmodified. Licensed under the
+  **Mozilla Public License 2.0**, which is compatible with the GPL by way of its section 3.3.
+  Source for the covered files is available at the link above.
+- **[PawnIO](https://github.com/namazso/PawnIO.Setup)** — the kernel driver LibreHardwareMonitor
+  uses for port I/O. Installed separately by the user; not distributed with T4Power.
+- LibreHardwareMonitorLib's own dependencies (HidSharp, DiskInfoToolkit, RAMSPDToolkit,
+  Mono.Posix.NETStandard, System.IO.Ports, System.Management) ship in the published binary under
+  their respective MIT/Apache/MPL licences.
 
 ---
 

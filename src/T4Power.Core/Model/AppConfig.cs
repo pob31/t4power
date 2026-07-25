@@ -76,11 +76,13 @@ public sealed record GpuConfig
 public sealed record AppConfig
 {
     /// <summary>
-    /// Current schema version. Bumped to 2 when the Max profile changed from "clocks unlocked"
-    /// to "clocks pinned at the top": unlocked lets an idle card sit in P8, so the old Max could
-    /// not raise performance at all.
+    /// Current schema version.
+    ///
+    /// v2 changed the Max profile from "clocks unlocked" to "clocks pinned at the top": unlocked
+    /// lets an idle card sit in P8, so the old Max could not raise performance at all.
+    /// v3 added <see cref="Fans"/>.
     /// </summary>
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 
     public int Version { get; init; } = CurrentVersion;
 
@@ -106,8 +108,21 @@ public sealed record AppConfig
 
     public IReadOnlyList<GpuConfig> Gpus { get; init; } = [];
 
+    /// <summary>
+    /// Motherboard fan headers T4Power has been told to drive. Board-level rather than per-GPU:
+    /// a PWM channel belongs to the machine, and which GPU's temperature steers it is a property
+    /// of the header (<see cref="FanConfig.SourceGpuUuid"/>), not the other way round.
+    ///
+    /// Empty by default and after migration. A header is only ever driven once explicitly adopted.
+    /// </summary>
+    public IReadOnlyList<FanConfig> Fans { get; init; } = [];
+
     public GpuConfig? Find(string uuid) =>
         Gpus.FirstOrDefault(g => string.Equals(g.Uuid, uuid, StringComparison.OrdinalIgnoreCase));
+
+    public FanConfig? FindFan(string controlIdentifier) =>
+        Fans.FirstOrDefault(f =>
+            string.Equals(f.ControlIdentifier, controlIdentifier, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Adds a <see cref="GpuConfig"/> for any GPU we have not seen before, preserving existing
@@ -136,19 +151,55 @@ public sealed record AppConfig
             string.Equals(g.Uuid, updated.Uuid, StringComparison.OrdinalIgnoreCase) ? updated : g).ToList(),
     };
 
+    /// <summary>Replaces a header's settings, or adds them if this header is newly adopted.</summary>
+    public AppConfig WithFan(FanConfig updated)
+    {
+        var fans = Fans.ToList();
+        var index = fans.FindIndex(f =>
+            string.Equals(f.ControlIdentifier, updated.ControlIdentifier, StringComparison.OrdinalIgnoreCase));
+
+        if (index < 0) fans.Add(updated); else fans[index] = updated;
+
+        return this with { Fans = fans };
+    }
+
+    /// <summary>Forgets a header entirely. Releasing it to the BIOS is the caller's job — this
+    /// only drops the settings, and doing it first would lose the identifier needed to release.</summary>
+    public AppConfig WithoutFan(string controlIdentifier) => this with
+    {
+        Fans = Fans.Where(f =>
+            !string.Equals(f.ControlIdentifier, controlIdentifier, StringComparison.OrdinalIgnoreCase)).ToList(),
+    };
+
     /// <summary>
-    /// Brings a config written by an older version up to date. Rules, watchlists and the managed
-    /// flag are preserved; only the stock profiles are regenerated, because a v1 config carries a
-    /// Max profile that unlocks clocks and therefore cannot raise performance.
+    /// Brings a config written by an older version up to date, one version at a time.
     ///
-    /// Profiles the user added under their own names are left alone.
+    /// Stepwise rather than a single pass on purpose: each step must only run for the versions it
+    /// applies to. Regenerating profiles is right for a v1 config and wrong for a v2 one, so
+    /// hanging every step off a single "is this current?" check would silently redo work — and
+    /// log a reason that was not true — every time the version is bumped for an unrelated reason.
     /// </summary>
     public AppConfig Migrate(IReadOnlyDictionary<string, GpuInfo> discovered, Action<string>? log = null)
     {
         if (Version >= CurrentVersion) return this;
 
-        log?.Invoke($"migrating configuration from v{Version} to v{CurrentVersion}: " +
-                    "regenerating the stock Eco/Balanced/Max profiles");
+        log?.Invoke($"migrating configuration from v{Version} to v{CurrentVersion}");
+
+        var result = this;
+        if (result.Version < 2) result = result.MigrateTo2(discovered, log);
+        if (result.Version < 3) result = result.MigrateTo3(log);
+
+        return result with { Version = CurrentVersion };
+    }
+
+    /// <summary>
+    /// v1 to v2. A v1 config carries a Max profile that unlocks clocks and therefore cannot raise
+    /// performance, so the stock profiles are regenerated. Rules, watchlists and the managed flag
+    /// are preserved, as are profiles the user added under their own names.
+    /// </summary>
+    AppConfig MigrateTo2(IReadOnlyDictionary<string, GpuInfo> discovered, Action<string>? log)
+    {
+        log?.Invoke("v2: regenerating the stock Eco/Balanced/Max profiles");
 
         var updated = Gpus.Select(gpu =>
         {
@@ -161,6 +212,17 @@ public sealed record AppConfig
             return gpu with { Profiles = [.. stock, .. custom] };
         }).ToList();
 
-        return this with { Version = CurrentVersion, Gpus = updated };
+        return this with { Version = 2, Gpus = updated };
+    }
+
+    /// <summary>
+    /// v2 to v3. Motherboard fan control arrived. There is nothing to convert: <see cref="Fans"/>
+    /// defaults to empty when the key is absent, and a header is only ever driven after the user
+    /// explicitly adopts it. Nothing should start spinning because someone upgraded.
+    /// </summary>
+    AppConfig MigrateTo3(Action<string>? log)
+    {
+        log?.Invoke("v3: motherboard fan control is available; no header is adopted until you ask");
+        return this with { Version = 3 };
     }
 }

@@ -38,8 +38,18 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
-    <!-- ServiceController, for querying and waiting on the service during install/uninstall. -->
+    <!-- ServiceController, for querying and waiting on the service during install/uninstall,
+         and for probing and starting the PawnIO driver that fan control needs. -->
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0" />
+
+    <!-- Motherboard fan control (MPL-2.0, which GPL-3.0 permits linking under section 3.3).
+         Deliberately NOT referenced by T4Power.Core: it pulls in six transitive packages and
+         reaches hardware through a kernel driver, and Core's zero-package property is what
+         keeps the unit tests hardware-free. See T4Power.Core.Fans.IFanHardware for the seam.
+
+         Never enable PublishTrimmed with this: LibreHardwareMonitor is reflection-heavy and
+         would fail silently at runtime rather than at build time. -->
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
   </ItemGroup>
 
   <ItemGroup>

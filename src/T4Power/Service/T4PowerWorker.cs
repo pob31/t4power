@@ -35,8 +35,12 @@ internal sealed class T4PowerWorker(FileLog log) : BackgroundService
             throw;
         }
 
+        // Fan control is optional and must never be a reason the service fails to start: TryOpen
+        // reports its own problems and returns an instance that politely does nothing.
+        var fans = LhmFanHardware.TryOpen(log);
+
         var store = new ConfigStore();
-        _manager = new GpuManager(session, store, log);
+        _manager = new GpuManager(session, store, log, fanHardware: fans);
 
         _manager.KickStuckPStates();
         _manager.Tick();   // apply the boot-time profile before anything else happens
@@ -80,7 +84,9 @@ internal sealed class T4PowerWorker(FileLog log) : BackgroundService
 
         if (_server is not null) await _server.DisposeAsync().ConfigureAwait(false);
 
-        // Leave the hardware as we found it. A stopped service must not leave the GPU clamped.
+        // Leave the hardware as we found it. A stopped service must not leave the GPU clamped,
+        // nor a fan header stuck under software control - which is why RestoreAllDefaults also
+        // hands every adopted header back to the BIOS curve.
         try { _manager?.RestoreAllDefaults(); }
         catch (Exception ex) { log.Error($"restoring defaults on shutdown failed: {ex.Message}"); }
 

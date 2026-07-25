@@ -1,3 +1,4 @@
+using T4Power.Core.Fans;
 using T4Power.Core.Ipc;
 using T4Power.Core.Model;
 using T4Power.Core.Nvml;
@@ -28,6 +29,7 @@ public sealed class GpuManager : IDisposable
     readonly ConfigStore _store;
     readonly RuleEngine _engine;
     readonly IProcessSource _processes;
+    readonly FanManager _fans;
     readonly FileLog _log;
     readonly Func<DateTimeOffset> _clock;
 
@@ -60,7 +62,8 @@ public sealed class GpuManager : IDisposable
         ConfigStore store,
         FileLog log,
         IProcessSource? processes = null,
-        Func<DateTimeOffset>? clock = null)
+        Func<DateTimeOffset>? clock = null,
+        IFanHardware? fanHardware = null)
     {
         _session = session;
         _store = store;
@@ -68,6 +71,10 @@ public sealed class GpuManager : IDisposable
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _engine = new RuleEngine(_clock);
         _processes = processes ?? new ProcessWatcher(clock: _clock);
+
+        // Fan control is strictly additive: with no hardware layer supplied it reports itself
+        // unavailable and writes nothing, and everything else carries on exactly as before.
+        _fans = new FanManager(fanHardware ?? new NullFanHardware(), log, _clock);
 
         // Discovery is by UUID, so a GPU that was moved to another slot keeps its settings and a
         // newly seen one picks up defaults.
@@ -85,6 +92,13 @@ public sealed class GpuManager : IDisposable
 
     public AppConfig Config { get { lock (_gate) return _config; } }
     public string? DriverVersion => _session.DriverVersion;
+
+    /// <summary>
+    /// The fan layer. Reachable so the IPC handlers can enumerate and adopt headers, but every
+    /// caller must hold <see cref="_tick"/> — <see cref="FanManager"/> deliberately takes no lock
+    /// of its own.
+    /// </summary>
+    public FanManager Fans => _fans;
 
     // ---- startup / shutdown ----------------------------------------------------------
 
@@ -144,13 +158,25 @@ public sealed class GpuManager : IDisposable
         {
             if (_disposed) return;
 
-            foreach (var device in ManagedDevices())
+            // Two independent restores, so a failure in one still leaves the other done. An NVML
+            // error must not be the reason a fan header stays pinned by a service that is exiting.
+            try
             {
-                _log.Info($"restoring {device.Info.Name} to defaults " +
-                          $"({device.Info.DefaultPowerLimitW:0.#} W, clocks unlocked)");
-                device.RestoreDefaults();
-                _applied.Remove(device.Uuid);
+                foreach (var device in ManagedDevices())
+                {
+                    _log.Info($"restoring {device.Info.Name} to defaults " +
+                              $"({device.Info.DefaultPowerLimitW:0.#} W, clocks unlocked)");
+                    device.RestoreDefaults();
+                    _applied.Remove(device.Uuid);
+                }
             }
+            catch (NvmlException ex)
+            {
+                _log.Error($"restoring GPU defaults failed: {ex.Message}");
+            }
+
+            // Last, so the headers are handed back reflecting the GPU's final state.
+            _fans.ReleaseAll();
         }
     }
 
@@ -206,6 +232,18 @@ public sealed class GpuManager : IDisposable
             if (decision.Desired is not null)
                 ApplyIfChanged(device, decision);
         }
+
+        // Fans last, so they steer on the telemetry this tick just read rather than the previous
+        // one. Inside the same monitor as everything above, which is what FanManager assumes.
+        AppConfig config;
+        lock (_gate) config = _config;
+
+        _fans.Apply(config, TelemetryFor, UpdateFanConfig);
+    }
+
+    GpuTelemetry? TelemetryFor(string uuid)
+    {
+        lock (_gate) return _lastTelemetry.GetValueOrDefault(uuid);
     }
 
     void ApplyIfChanged(GpuDevice device, RuleDecision decision)
@@ -290,6 +328,13 @@ public sealed class GpuManager : IDisposable
             return Task.FromResult(IpcResponse.Failure(ex.Message,
                 ex.IsPermissionDenied ? 5 : ex.IsNotSupported ? 6 : 8));
         }
+        catch (FanHardwareException ex)
+        {
+            // Reported as "not supported" rather than a generic failure: from the caller's side a
+            // header that cannot be written is the same class of problem as a GPU that will not
+            // take a clock lock.
+            return Task.FromResult(IpcResponse.Failure(ex.Message, 6));
+        }
     }
 
     IpcResponse Handle(IpcRequest request) => request.Command switch
@@ -302,8 +347,252 @@ public sealed class GpuManager : IDisposable
         IpcCommands.SetGpuConfig => SetGpuConfig(request),
         IpcCommands.AddWatch => EditWatchlist(request, add: true),
         IpcCommands.RemoveWatch => EditWatchlist(request, add: false),
+        IpcCommands.ListFans => ListFans(),
+        IpcCommands.AdoptFan => AdoptFan(request),
+        IpcCommands.ReleaseFan => ReleaseFan(request),
+        IpcCommands.SetFanConfig => SetFanConfig(request),
+        IpcCommands.SetFanOverride => SetFanOverride(request),
+        IpcCommands.ClearFanOverride => ClearFanOverride(request),
         _ => IpcResponse.Failure($"unknown command '{request.Command}'", 1),
     };
+
+    // ---- fan commands ----------------------------------------------------------------
+
+    /// <summary>
+    /// Discovery. Unlike get-state, this reports every header on the board rather than only the
+    /// adopted ones, each with a live reading — it is the command you use to work out which
+    /// header is the one you care about, and it cannot do that job without the unadopted ones.
+    /// </summary>
+    IpcResponse ListFans() => new()
+    {
+        Ok = true,
+        ServiceVersion = Version,
+        FanChannels = _fans.Channels,
+        Fans = NameSources(_fans.Survey()),
+        FanHardware = FanHardwareInfo(),
+    };
+
+    /// <summary>Resolves each header's source GPU UUID to a readable name. Done here because the
+    /// fan layer deliberately knows nothing about NVML.</summary>
+    IReadOnlyList<FanStatus> NameSources(IReadOnlyList<FanStatus> statuses) => statuses
+        .Select(s => s.SourceGpuUuid is { } uuid && _session.FindByUuid(uuid) is { } device
+            ? s with { SourceGpuName = device.Info.Name }
+            : s)
+        .ToList();
+
+    FanHardwareInfo FanHardwareInfo() => new()
+    {
+        Available = _fans.IsAvailable,
+        Reason = _fans.UnavailableReason,
+    };
+
+    /// <summary>Rejects a fan request early when there is no hardware to act on, so the caller
+    /// gets the PawnIO explanation rather than "no fan matched".</summary>
+    IpcResponse? FanUnavailable() => _fans.IsAvailable
+        ? null
+        : IpcResponse.Failure(_fans.UnavailableReason ?? "fan control is not available", 6);
+
+    /// <summary>
+    /// Takes a header under management, driven by a named GPU's temperature.
+    ///
+    /// Deliberately verifies before committing: a selector that resolves to the wrong channel
+    /// would otherwise silently take over the pump or a CPU fan, and the first symptom of that is
+    /// thermal. A header that does not visibly respond is still adopted, but unverified and
+    /// flagged, because "no tachometer" is a legitimate wiring choice and refusing outright would
+    /// be worse than saying so.
+    /// </summary>
+    IpcResponse AdoptFan(IpcRequest request)
+    {
+        if (FanUnavailable() is { } unavailable) return unavailable;
+
+        var channel = _fans.FindChannel(request.Fan);
+        if (channel is null)
+        {
+            return IpcResponse.Failure(
+                $"no fan header matched '{request.Fan}' (available: " +
+                $"{string.Join(", ", _fans.Channels.Select(c => c.Identifier))})", 3);
+        }
+
+        var devices = Select(request.Gpu, out var error);
+        if (error is not null) return error;
+        if (devices.Count > 1)
+        {
+            return IpcResponse.Failure(
+                "a fan header is driven by exactly one GPU; name which one with --gpu", 1);
+        }
+
+        var device = devices[0];
+        var existing = _config.FindFan(channel.Identifier);
+
+        var problem = _fans.Verify(channel, Thread.Sleep);
+
+        var adopted = (existing ?? FanConfig.CreateDefault(channel.Identifier, device.Uuid)) with
+        {
+            ControlIdentifier = channel.Identifier,
+            ChipName = channel.ChipName,
+            ControlIndex = channel.Index,
+            RpmSensorIdentifier = channel.RpmSensorIdentifier,
+            FriendlyName = existing?.FriendlyName ?? channel.Name,
+            SourceGpuUuid = device.Uuid,
+            Managed = true,
+            Verified = problem is null,
+        };
+
+        UpdateFanConfig(adopted);
+        _fans.Reset(channel.Identifier);
+        _log.Info($"adopted fan header {channel.Describe()}, driven by {device.Info.Name}" +
+                  (problem is null ? "" : $" (unverified: {problem})"));
+
+        Tick();
+
+        var message = $"{channel.Describe()} is now driven by {device.Info.Name}'s temperature";
+        return new IpcResponse
+        {
+            Ok = true,
+            Message = problem is null ? message : $"{message}. Warning: {problem}",
+            Fans = NameSources(_fans.Statuses),
+            FanChannels = _fans.Channels,
+            FanHardware = FanHardwareInfo(),
+        };
+    }
+
+    /// <summary>
+    /// Hands a header back to the BIOS and forgets it. Order matters: release first, because
+    /// dropping the config would lose the identifier needed to do the releasing.
+    /// </summary>
+    IpcResponse ReleaseFan(IpcRequest request)
+    {
+        var fan = _config.Fans.FirstOrDefault(f => FanSelector.Matches(f, request.Fan));
+        if (fan is null)
+            return IpcResponse.Failure($"no managed fan header matched '{request.Fan}'", 3);
+
+        if (_fans.FindChannel(fan.ControlIdentifier) is { } channel)
+        {
+            try
+            {
+                _fans.Release(channel);
+            }
+            catch (FanHardwareException ex)
+            {
+                _log.Error($"releasing {channel.Describe()} failed: {ex.Message}");
+            }
+        }
+
+        lock (_gate)
+        {
+            _config = _config.WithoutFan(fan.ControlIdentifier);
+            _store.Save(_config);
+        }
+
+        _fans.Reset(fan.ControlIdentifier);
+        _log.Info($"released fan header {fan.DisplayName}; it is back on the BIOS curve");
+
+        Tick();
+        return new IpcResponse
+        {
+            Ok = true,
+            Message = $"{fan.DisplayName} is back under BIOS control",
+            Fans = NameSources(_fans.Statuses),
+            FanChannels = _fans.Channels,
+            FanHardware = FanHardwareInfo(),
+        };
+    }
+
+    /// <summary>Replaces one header's settings, used by the curve editor.</summary>
+    IpcResponse SetFanConfig(IpcRequest request)
+    {
+        if (request.FanConfig is null)
+            return IpcResponse.Failure("set-fan-config requires a fanConfig body", 1);
+
+        var incoming = request.FanConfig;
+        var existing = _config.FindFan(incoming.ControlIdentifier);
+        if (existing is null)
+        {
+            return IpcResponse.Failure(
+                $"fan header '{incoming.ControlIdentifier}' is not managed; adopt it first", 3);
+        }
+
+        if (_session.FindByUuid(incoming.SourceGpuUuid) is null)
+            return IpcResponse.Failure($"no GPU with UUID '{incoming.SourceGpuUuid}'", 3);
+
+        // Points arrive from a client that may have dragged them into any order and off the axis,
+        // so normalise before anything evaluates them.
+        var updated = incoming with
+        {
+            Curve = incoming.Curve.Normalised(),
+            Verified = existing.Verified,
+        };
+
+        UpdateFanConfig(updated);
+        _fans.Reset(updated.ControlIdentifier);
+        _log.Info($"fan configuration updated for {updated.DisplayName}");
+
+        Tick();
+        return new IpcResponse
+        {
+            Ok = true,
+            Message = "fan configuration saved",
+            Fans = NameSources(_fans.Statuses),
+            FanHardware = FanHardwareInfo(),
+        };
+    }
+
+    /// <summary>
+    /// Holds a header at a fixed duty. Also the "which fan is this?" gesture — a short TTL and
+    /// 100% spins one up audibly and then puts it back on its own.
+    /// </summary>
+    IpcResponse SetFanOverride(IpcRequest request)
+    {
+        if (request.FanPercent is not { } percent)
+            return IpcResponse.Failure("set-fan-override requires a fanPercent", 1);
+
+        if (percent is < 0 or > 100)
+            return IpcResponse.Failure($"{percent:0.#}% is outside the 0-100 range", 4);
+
+        var fan = _config.Fans.FirstOrDefault(f => FanSelector.Matches(f, request.Fan));
+        if (fan is null)
+            return IpcResponse.Failure($"no managed fan header matched '{request.Fan}'", 3);
+
+        var expires = request.DurationSeconds is { } seconds and > 0
+            ? _clock().AddSeconds(seconds)
+            : (DateTimeOffset?)null;
+
+        UpdateFanConfig(fan with { Override = new FanOverride { Percent = percent, ExpiresUtc = expires } });
+
+        var ttl = expires is null ? "until cleared" : $"for {request.DurationSeconds}s";
+        _log.Info($"fan override set: {fan.DisplayName} -> {percent:0.#}% {ttl}");
+
+        Tick();
+        return new IpcResponse
+        {
+            Ok = true,
+            Message = $"{fan.DisplayName} held at {percent:0.#}% {ttl}",
+            Fans = NameSources(_fans.Statuses),
+            FanHardware = FanHardwareInfo(),
+        };
+    }
+
+    IpcResponse ClearFanOverride(IpcRequest request)
+    {
+        var fan = _config.Fans.FirstOrDefault(f => FanSelector.Matches(f, request.Fan));
+        if (fan is null)
+            return IpcResponse.Failure($"no managed fan header matched '{request.Fan}'", 3);
+
+        if (fan.Override is not null)
+        {
+            UpdateFanConfig(fan with { Override = null });
+            _log.Info($"fan override cleared: {fan.DisplayName} back to its curve");
+        }
+
+        Tick();
+        return new IpcResponse
+        {
+            Ok = true,
+            Message = $"{fan.DisplayName} is back on its curve",
+            Fans = NameSources(_fans.Statuses),
+            FanHardware = FanHardwareInfo(),
+        };
+    }
 
     /// <summary>
     /// Adds or removes executable names on the process-name rule. Done service-side rather than
@@ -405,6 +694,13 @@ public sealed class GpuManager : IDisposable
                 Ok = true,
                 ServiceVersion = Version,
                 DriverVersion = DriverVersion,
+                Fans = NameSources(_fans.Statuses),
+
+                // Included in the ordinary poll, not just list-fans: it is a handful of small
+                // records, and it means the UI's adoption picker stays live - a header that
+                // appears once PawnIO starts shows up without anyone hitting refresh.
+                FanChannels = _fans.Channels,
+                FanHardware = FanHardwareInfo(),
                 Gpus = devices.Select(d =>
                 {
                     var cfg = _config.Find(d.Uuid);
@@ -616,6 +912,15 @@ public sealed class GpuManager : IDisposable
         }
     }
 
+    void UpdateFanConfig(FanConfig updated)
+    {
+        lock (_gate)
+        {
+            _config = _config.WithFan(updated);
+            _store.Save(_config);
+        }
+    }
+
     /// <summary>
     /// Shuts down NVML. Takes the same lock as <see cref="Tick"/> so an in-flight evaluation
     /// cannot be left calling into a library that has already been torn down — that race is
@@ -627,6 +932,7 @@ public sealed class GpuManager : IDisposable
         {
             if (_disposed) return;
             _disposed = true;
+            _fans.Dispose();
             _session.Dispose();
         }
     }

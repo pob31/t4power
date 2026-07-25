@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using T4Power.Core;
+using T4Power.Core.Fans;
 using T4Power.Core.Model;
 
 namespace T4Power.Ui;
@@ -139,6 +140,116 @@ public partial class MainWindow : Window
         await ReportAsync(await gpu.RemoveWatchAsync(exe).ConfigureAwait(true));
     }
 
+    // ---- fan control -----------------------------------------------------------------
+    //
+    // The same discipline as the GPU sliders above: every commit below is driven by a real user
+    // action, and the curve editor raises CurveCommitted only on gesture boundaries. Nothing here
+    // can be triggered by the poll loop updating a bound property.
+
+    async void AdoptFan_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: FanChannel channel }) return;
+        if (_model.FanSourceGpu is not { } gpu) return;
+
+        var answer = MessageBox.Show(
+            $"Let T4Power drive {channel.Describe()} from {gpu.Name}'s temperature?\n\n" +
+            "The header will briefly run at full speed to confirm it responds.\n\n" +
+            "Make sure nothing else is driving this header, and that the BIOS curve for it is " +
+            "safe — that is what takes over whenever T4Power is not running.",
+            "Adopt this fan header", MessageBoxButton.OKCancel, MessageBoxImage.Question);
+        if (answer != MessageBoxResult.OK) return;
+
+        _model.LastMessage = "checking the header responds...";
+        await ReportAsync(await _link.AdoptFanAsync(channel.Identifier, gpu.Uuid).ConfigureAwait(true));
+    }
+
+    /// <summary>Spins an unadopted header so the user can hear which fan it is. Goes straight to
+    /// the service rather than through a view model, because nothing owns this header yet.</summary>
+    async void IdentifyChannel_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: FanChannel channel }) return;
+
+        _model.LastMessage = $"spinning {channel.Name} up for ten seconds...";
+        await ReportAsync(await _link
+            .SetFanPercentAsync(channel.Identifier, 100, TimeSpan.FromSeconds(10))
+            .ConfigureAwait(true));
+    }
+
+    async void IdentifyFan_Click(object sender, RoutedEventArgs e)
+    {
+        if (FindFan(sender) is not { } fan) return;
+        await ReportAsync(await fan.IdentifyAsync().ConfigureAwait(true));
+    }
+
+    async void FanAuto_Click(object sender, RoutedEventArgs e)
+    {
+        if (FindFan(sender) is not { } fan) return;
+        await ReportAsync(await fan.ReturnToCurveAsync().ConfigureAwait(true));
+    }
+
+    async void ReleaseFan_Click(object sender, RoutedEventArgs e)
+    {
+        if (FindFan(sender) is not { } fan) return;
+
+        var answer = MessageBox.Show(
+            $"Hand {fan.Name} back to the BIOS and stop managing it?\n\n" +
+            "The motherboard's own fan curve takes over immediately.",
+            "Release this fan header", MessageBoxButton.OKCancel, MessageBoxImage.Question);
+        if (answer != MessageBoxResult.OK) return;
+
+        await ReportAsync(await fan.ReleaseAsync().ConfigureAwait(true));
+    }
+
+    void FanSlider_DragStarted(object sender, RoutedEventArgs e)
+    {
+        if (FindFan(sender) is { } fan) fan.IsUserAdjusting = true;
+    }
+
+    async void FanSlider_DragCompleted(object sender, RoutedEventArgs e)
+    {
+        if (FindFan(sender) is not { } fan) return;
+        fan.IsUserAdjusting = false;
+        await ReportAsync(await fan.CommitDutyAsync().ConfigureAwait(true));
+    }
+
+    async void FanSlider_KeyUp(object sender, KeyEventArgs e)
+    {
+        if (e.Key is not (Key.Left or Key.Right or Key.Up or Key.Down
+            or Key.PageUp or Key.PageDown or Key.Home or Key.End)) return;
+
+        if (FindFan(sender) is not { } fan) return;
+        await ReportAsync(await fan.CommitDutyAsync().ConfigureAwait(true));
+    }
+
+    /// <summary>
+    /// Wires a curve editor to its view model as each card is realised.
+    ///
+    /// Done here rather than with bindings because the editor's contract is event-based on
+    /// purpose: PointsChanged is local-only and fires throughout a drag, while CurveCommitted is
+    /// the single path to the service. Expressing that as a two-way binding is exactly the
+    /// mistake the sliders above document.
+    /// </summary>
+    void CurveEditor_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FanCurveEditor editor) return;
+        if (editor.DataContext is not FanViewModel fan) return;
+
+        // Idempotent: a virtualised card can raise Loaded more than once for the same instance.
+        editor.PointsChanged -= fan.ReplacePointsLocally;
+        editor.PointsChanged += fan.ReplacePointsLocally;
+
+        editor.IsUserAdjusting -= OnCurveAdjusting;
+        editor.IsUserAdjusting += OnCurveAdjusting;
+
+        editor.CurveCommitted -= OnCurveCommitted;
+        editor.CurveCommitted += OnCurveCommitted;
+
+        void OnCurveAdjusting(bool adjusting) => fan.IsUserAdjusting = adjusting;
+
+        async void OnCurveCommitted() =>
+            await ReportAsync(await fan.CommitCurveAsync().ConfigureAwait(true));
+    }
+
     void InstallService_Click(object sender, RoutedEventArgs e)
     {
         // Runs the install verb, which raises the one UAC prompt this design costs.
@@ -166,6 +277,18 @@ public partial class MainWindow : Window
         while (element is not null)
         {
             if (element.DataContext is GpuViewModel gpu) return gpu;
+            element = System.Windows.Media.VisualTreeHelper.GetParent(element) as FrameworkElement;
+        }
+        return null;
+    }
+
+    /// <summary>The fan-card equivalent of <see cref="FindGpu"/>.</summary>
+    static FanViewModel? FindFan(object sender)
+    {
+        var element = sender as FrameworkElement;
+        while (element is not null)
+        {
+            if (element.DataContext is FanViewModel fan) return fan;
             element = System.Windows.Media.VisualTreeHelper.GetParent(element) as FrameworkElement;
         }
         return null;

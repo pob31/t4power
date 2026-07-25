@@ -21,8 +21,14 @@ internal sealed class ServiceLink : IDisposable
         _timer.Tick += async (_, _) => await RefreshAsync().ConfigureAwait(true);
     }
 
-    /// <summary>Raised on the UI thread whenever fresh state arrives.</summary>
-    public event Action<IReadOnlyList<GpuStateDto>>? StateChanged;
+    /// <summary>
+    /// Raised on the UI thread whenever fresh state arrives.
+    ///
+    /// Carries the whole response rather than just the GPU list so that GPU and fan state always
+    /// come from the same tick — a fan card showing a temperature the GPU card disagrees with
+    /// would be a confusing way to save one event.
+    /// </summary>
+    public event Action<IpcResponse>? StateChanged;
 
     /// <summary>Raised when the service becomes reachable or unreachable, with the reason.</summary>
     public event Action<bool, string?>? AvailabilityChanged;
@@ -49,7 +55,7 @@ internal sealed class ServiceLink : IDisposable
                 .ConfigureAwait(true);
 
             SetAvailability(response.Ok, response.Error);
-            if (response.Ok) StateChanged?.Invoke(response.Gpus);
+            if (response.Ok) StateChanged?.Invoke(response);
         }
         catch (Exception ex) when (ex is IpcClient.UnavailableException or IpcClient.AccessDeniedException or IOException)
         {
@@ -69,7 +75,10 @@ internal sealed class ServiceLink : IDisposable
             var response = await _client.SendAsync(request).ConfigureAwait(true);
             SetAvailability(true, null);
 
-            if (response.Ok && response.Gpus.Count > 0) StateChanged?.Invoke(response.Gpus);
+            // Fan commands come back with fans but no GPUs, so both lists have to be considered
+            // before falling back to a full refresh.
+            if (response.Ok && (response.Gpus.Count > 0 || response.Fans.Count > 0))
+                StateChanged?.Invoke(response);
             else if (response.Ok) await RefreshAsync().ConfigureAwait(true);
 
             return (response.Ok, response.Ok ? response.Message : response.Error);
@@ -128,6 +137,29 @@ internal sealed class ServiceLink : IDisposable
 
     public Task<(bool Ok, string? Message)> SaveConfigAsync(GpuConfig config) =>
         SendAsync(new IpcRequest { Command = IpcCommands.SetGpuConfig, GpuConfig = config });
+
+    // ---- fan control -----------------------------------------------------------------
+
+    public Task<(bool Ok, string? Message)> AdoptFanAsync(string fan, string gpuUuid) =>
+        SendAsync(new IpcRequest { Command = IpcCommands.AdoptFan, Fan = fan, Gpu = gpuUuid });
+
+    public Task<(bool Ok, string? Message)> ReleaseFanAsync(string fan) =>
+        SendAsync(new IpcRequest { Command = IpcCommands.ReleaseFan, Fan = fan });
+
+    public Task<(bool Ok, string? Message)> SetFanPercentAsync(string fan, double percent, TimeSpan? duration = null) =>
+        SendAsync(new IpcRequest
+        {
+            Command = IpcCommands.SetFanOverride,
+            Fan = fan,
+            FanPercent = percent,
+            DurationSeconds = duration is { } d ? (int)d.TotalSeconds : null,
+        });
+
+    public Task<(bool Ok, string? Message)> FanAutoAsync(string fan) =>
+        SendAsync(new IpcRequest { Command = IpcCommands.ClearFanOverride, Fan = fan });
+
+    public Task<(bool Ok, string? Message)> SaveFanConfigAsync(FanConfig config) =>
+        SendAsync(new IpcRequest { Command = IpcCommands.SetFanConfig, FanConfig = config });
 
     void SetAvailability(bool available, string? reason)
     {
