@@ -159,6 +159,10 @@ internal static class CliRunner
             if (response.FanHardware is { Available: false })
             {
                 Console.WriteLine($"Fan control is unavailable: {response.FanHardware.Reason}");
+
+                // The window gets a button for this; a terminal gets the URL.
+                if (response.FanHardware.HelpUrl is { } url) Console.WriteLine($"See {url}");
+
                 return ExitCode.NotSupported;
             }
 

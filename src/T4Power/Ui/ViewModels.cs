@@ -45,6 +45,17 @@ internal sealed class MainViewModel : ObservableObject
     public bool FanControlAvailable { get => _fanControlAvailable; set => Set(ref _fanControlAvailable, value); }
     public string? FanUnavailableReason { get => _fanUnavailableReason; set => Set(ref _fanUnavailableReason, value); }
 
+    string? _fanHelpUrl;
+
+    /// <summary>Where to go to get fan control working, when the service says there is somewhere.</summary>
+    public string? FanHelpUrl
+    {
+        get => _fanHelpUrl;
+        set { if (Set(ref _fanHelpUrl, value)) Raise(nameof(HasFanHelpUrl)); }
+    }
+
+    public bool HasFanHelpUrl => !string.IsNullOrWhiteSpace(FanHelpUrl);
+
     /// <summary>True when there is something fan-related worth showing at all — either a working
     /// fan layer, or a reason it is not working that the user can act on.</summary>
     public bool ShowFanSection => FanControlAvailable || FanUnavailableReason is not null;
@@ -73,6 +84,7 @@ internal sealed class MainViewModel : ObservableObject
     {
         FanControlAvailable = response.FanHardware?.Available ?? false;
         FanUnavailableReason = response.FanHardware?.Available == false ? response.FanHardware.Reason : null;
+        FanHelpUrl = response.FanHardware?.Available == false ? response.FanHardware.HelpUrl : null;
 
         // Merge in place, exactly as the GPU cards do: rebuilding would drop the curve editor's
         // drag state and reset the picker mid-interaction.

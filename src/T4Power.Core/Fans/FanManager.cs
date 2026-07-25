@@ -86,6 +86,13 @@ public sealed class FanManager : IDisposable
         ? "fan control stopped responding and was disabled; restart the T4Power service to retry"
         : _hardware.UnavailableReason;
 
+    /// <summary>
+    /// Null once we have given up: at that point the hardware layer opened fine and the fix is a
+    /// service restart, not a download. Pointing someone at an installer for a driver they already
+    /// have would be actively misleading.
+    /// </summary>
+    public string? UnavailableHelpUrl => _givenUp ? null : _hardware.UnavailableHelpUrl;
+
     public IReadOnlyList<FanChannel> Channels => _hardware.Channels;
 
     public IReadOnlyList<FanStatus> Statuses => _status.Values.ToList();

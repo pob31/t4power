@@ -94,6 +94,10 @@ public sealed record FanHardwareInfo
 {
     public bool Available { get; init; }
     public string? Reason { get; init; }
+
+    /// <summary>Somewhere the user can go to fix it, when such a place exists. Lets the UI offer
+    /// a button rather than a URL buried in a sentence.</summary>
+    public string? HelpUrl { get; init; }
 }
 
 /// <summary>One GPU as the service sees it: identity, live telemetry, and why it is where it is.</summary>

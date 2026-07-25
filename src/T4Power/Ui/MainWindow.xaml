@@ -330,6 +330,9 @@
                        TextWrapping="Wrap" Margin="0,8,0,0" />
             <TextBlock Style="{StaticResource Dim}" TextWrapping="Wrap" Margin="0,8,0,0"
                        Text="Everything else works normally — fan control is an optional extra on top of GPU power and clock management." />
+            <Button Content="Get PawnIO" HorizontalAlignment="Left" Margin="0,12,0,0"
+                    Click="GetPawnIo_Click"
+                    Visibility="{Binding HasFanHelpUrl, Converter={StaticResource BoolToVis}}" />
           </StackPanel>
         </Border>
 

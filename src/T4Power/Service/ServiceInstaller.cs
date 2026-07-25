@@ -129,7 +129,39 @@ internal static class ServiceInstaller
               PawnIO from {PawnIoProbe.DownloadUrl} and restart the service.
               """);
 
+        if (!PawnIoProbe.IsInstalled()) OfferPawnIoDownload();
+
         return ExitCode.Ok;
+    }
+
+    /// <summary>
+    /// Offers to open the PawnIO download page rather than leaving the user to retype a URL.
+    ///
+    /// Deliberately not an automatic download-and-run: fetching and executing a third-party
+    /// driver installer on someone's behalf is not a decision this program gets to make. Opening
+    /// the page is the most it should do.
+    ///
+    /// Skipped entirely when input is redirected, so a scripted or piped install never blocks on
+    /// a prompt nobody is there to answer.
+    /// </summary>
+    static void OfferPawnIoDownload()
+    {
+        if (Console.IsInputRedirected) return;
+
+        Console.Write("Open the PawnIO download page now? [y/N] ");
+
+        var answer = Console.ReadLine();
+        if (answer is null || !answer.Trim().StartsWith("y", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        try
+        {
+            Shell.OpenUrl(PawnIoProbe.DownloadUrl);
+        }
+        catch (Exception ex)
+        {
+            Report($"could not open the browser ({ex.Message}); the address is {PawnIoProbe.DownloadUrl}");
+        }
     }
 
     static int Uninstall()

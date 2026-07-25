@@ -63,6 +63,15 @@ public interface IFanHardware : IDisposable
     /// <summary>Why fan control is off, in words a user can act on. Null when it is available.</summary>
     string? UnavailableReason { get; }
 
+    /// <summary>
+    /// Where to go to fix it, when there is somewhere to go — a driver download page, typically.
+    ///
+    /// Carried as its own value rather than left inside <see cref="UnavailableReason"/> so the UI
+    /// can offer a button instead of a URL the user has to notice and retype. Core never looks at
+    /// it, which is what keeps this project ignorant of whatever the hardware layer depends on.
+    /// </summary>
+    string? UnavailableHelpUrl { get; }
+
     IReadOnlyList<FanChannel> Channels { get; }
 
     /// <summary>Pulls fresh values for every channel. Called once per service tick.</summary>
@@ -89,6 +98,10 @@ public sealed class NullFanHardware : IFanHardware
 {
     public bool IsAvailable => false;
     public string? UnavailableReason { get; } = "fan control is not available on this system";
+
+    /// <summary>Nothing to link to: there is no hardware layer here to go and install.</summary>
+    public string? UnavailableHelpUrl => null;
+
     public IReadOnlyList<FanChannel> Channels => [];
 
     public void Refresh() { }

@@ -204,7 +204,25 @@ read verb makes the output a stable contract.
 
 ## Installing
 
-Needs the .NET 10 SDK to build; the published binary needs nothing.
+Run `T4Power-<version>-setup.exe` and accept the UAC prompt. It installs to Program Files,
+registers the service, and offers a Start-menu shortcut and sign-in autostart for the tray.
+Uninstall through Add/Remove Programs, which stops the service first — restoring the GPU's
+default power limit, releasing the clock lock, and handing any adopted fan header back to the
+BIOS before anything is deleted.
+
+If PawnIO is missing, setup explains what it is, why fan control needs it, and offers to open the
+download page at the end. It never downloads or runs a driver installer on your behalf.
+
+### Building it
+
+Needs the .NET 10 SDK, plus [Inno Setup](https://jrsoftware.org/isdl.php) for the installer.
+
+```powershell
+.\installer\build.ps1              # publish + package -> installer\Output\
+.\installer\build.ps1 -SkipPublish # repackage only, when iterating on the .iss
+```
+
+Or without an installer at all — one self-contained exe, no runtime prerequisite:
 
 ```powershell
 dotnet publish src/T4Power -c Release -r win-x64 --self-contained true `
@@ -213,10 +231,6 @@ dotnet publish src/T4Power -c Release -r win-x64 --self-contained true `
 
 .\publish\T4Power.exe --install-service    # one UAC prompt; copies to Program Files
 ```
-
-One self-contained exe, no runtime prerequisite. Uninstall with `--uninstall-service`, which
-stops the service, restores the default power limit, releases the clock lock and hands any
-adopted fan header back to the BIOS.
 
 Do **not** add `-p:PublishTrimmed=true`: LibreHardwareMonitor is reflection-heavy and would fail
 at runtime rather than at build time. After changing anything in the fan layer, test the

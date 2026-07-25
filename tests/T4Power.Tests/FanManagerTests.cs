@@ -15,6 +15,7 @@ public class FanManagerTests
     {
         public bool IsAvailable { get; set; } = true;
         public string? UnavailableReason => IsAvailable ? null : "fake is unavailable";
+        public string? UnavailableHelpUrl => IsAvailable ? null : "https://example.invalid/driver";
 
         public List<FanChannel> ChannelList { get; } = [];
         public IReadOnlyList<FanChannel> Channels => ChannelList;
@@ -240,6 +241,38 @@ public class FanManagerTests
         fake.ThrowOnRefresh = false;
         manager.Apply(Config(overridePercent: 50), Telemetry(), Ignore);
         Assert.Single(fake.Writes);
+    }
+
+    // ---- reporting why it is unavailable --------------------------------------------------
+
+    [Fact]
+    public void An_unavailable_backend_surfaces_both_its_reason_and_somewhere_to_go()
+    {
+        var fake = Hardware();
+        fake.IsAvailable = false;
+        using var manager = new FanManager(fake, Log());
+
+        Assert.False(manager.IsAvailable);
+        Assert.Equal("fake is unavailable", manager.UnavailableReason);
+        Assert.Equal("https://example.invalid/driver", manager.UnavailableHelpUrl);
+    }
+
+    [Fact]
+    public void Giving_up_reports_a_restart_rather_than_a_download()
+    {
+        // Once we have given up, the hardware layer opened fine and the fix is a service restart.
+        // Pointing the user at an installer for a driver they already have would be misleading.
+        var fake = Hardware();
+        fake.ThrowOnRefresh = true;
+        fake.ReopenSucceeds = false;
+        using var manager = new FanManager(fake, Log());
+
+        for (var i = 0; i < 6; i++)
+            manager.Apply(Config(overridePercent: 50), Telemetry(), Ignore);
+
+        Assert.False(manager.IsAvailable);
+        Assert.Contains("restart", manager.UnavailableReason!, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(manager.UnavailableHelpUrl);
     }
 
     // ---- shutdown ------------------------------------------------------------------------

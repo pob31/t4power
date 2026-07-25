@@ -41,11 +41,12 @@ public sealed class LhmFanHardware : IFanHardware
     Computer? _computer;
     List<FanChannel> _channels = [];
 
-    LhmFanHardware(FileLog log, Computer? computer, string? unavailableReason)
+    LhmFanHardware(FileLog log, Computer? computer, string? unavailableReason, string? helpUrl = null)
     {
         _log = log;
         _computer = computer;
         UnavailableReason = unavailableReason;
+        UnavailableHelpUrl = helpUrl;
 
         if (computer is null) return;
 
@@ -70,6 +71,12 @@ public sealed class LhmFanHardware : IFanHardware
 
     public bool IsAvailable => _computer is not null && _channels.Count > 0;
     public string? UnavailableReason { get; private set; }
+
+    /// <summary>
+    /// Set only where the driver is plausibly the cause. An unrelated failure leaves this null
+    /// rather than sending the user off to install something that was never the problem.
+    /// </summary>
+    public string? UnavailableHelpUrl { get; private set; }
     public IReadOnlyList<FanChannel> Channels => _channels;
 
     /// <summary>
@@ -84,7 +91,7 @@ public sealed class LhmFanHardware : IFanHardware
         if (pawnIo is not null)
         {
             log.Warn($"fan control unavailable: {pawnIo}");
-            return new LhmFanHardware(log, computer: null, pawnIo);
+            return new LhmFanHardware(log, computer: null, pawnIo, PawnIoProbe.DownloadUrl);
         }
 
         try
@@ -125,8 +132,8 @@ public sealed class LhmFanHardware : IFanHardware
                 // point at the likely cause rather than shrugging.
                 hardware.UnavailableReason =
                     "no controllable fan headers were found. The motherboard's SuperIO chip may " +
-                    "not be supported, or the PawnIO driver may not be able to reach it. " +
-                    $"See {PawnIoProbe.DownloadUrl}.";
+                    "not be supported, or the PawnIO driver may not be able to reach it.";
+                hardware.UnavailableHelpUrl = PawnIoProbe.DownloadUrl;
                 log.Warn($"fan control unavailable: {hardware.UnavailableReason}");
             }
 
@@ -293,6 +300,7 @@ public sealed class LhmFanHardware : IFanHardware
             if (!reopened.IsAvailable)
             {
                 UnavailableReason = reopened.UnavailableReason;
+                UnavailableHelpUrl = reopened.UnavailableHelpUrl;
                 reopened.Close();
                 return false;
             }

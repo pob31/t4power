@@ -250,6 +250,22 @@ public partial class MainWindow : Window
             await ReportAsync(await fan.CommitCurveAsync().ConfigureAwait(true));
     }
 
+    void GetPawnIo_Click(object sender, RoutedEventArgs e)
+    {
+        if (_model.FanHelpUrl is not { } url) return;
+
+        try
+        {
+            Shell.OpenUrl(url);
+            _model.LastMessage = "opened the PawnIO download page — install it, then restart the T4Power service";
+        }
+        catch (Exception ex)
+        {
+            // Falling back to showing the URL beats a dead button.
+            _model.LastMessage = $"could not open the browser ({ex.Message}) — the address is {url}";
+        }
+    }
+
     void InstallService_Click(object sender, RoutedEventArgs e)
     {
         // Runs the install verb, which raises the one UAC prompt this design costs.

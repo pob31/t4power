@@ -384,6 +384,7 @@ public sealed class GpuManager : IDisposable
     {
         Available = _fans.IsAvailable,
         Reason = _fans.UnavailableReason,
+        HelpUrl = _fans.UnavailableHelpUrl,
     };
 
     /// <summary>Rejects a fan request early when there is no hardware to act on, so the caller

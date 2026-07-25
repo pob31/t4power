@@ -25,10 +25,15 @@ public static class PawnIoProbe
     public const string DriverName = "PawnIO";
     public const string DownloadUrl = "https://github.com/namazso/PawnIO.Setup/releases";
 
+    /// <summary>
+    /// The URL is deliberately not in this sentence. It travels separately as
+    /// <see cref="Core.Fans.IFanHardware.UnavailableHelpUrl"/> so the UI can render a button, and
+    /// the CLI appends it itself — embedding it here would print it twice in the window.
+    /// </summary>
     public static string NotInstalledMessage =>
         "the PawnIO driver is not installed, so motherboard fan headers cannot be reached. " +
         "It is required on any machine with Memory Integrity (HVCI) enabled, which is most of " +
-        $"them. Install it from {DownloadUrl} and restart the T4Power service.";
+        "them. Install it and restart the T4Power service.";
 
     /// <summary>
     /// Whether the driver is installed at all. Used by the installer to tell someone up front

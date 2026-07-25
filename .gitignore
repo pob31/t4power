@@ -5,6 +5,7 @@
 [Ll]ogs/
 artifacts/
 publish/
+installer/Output/
 
 ## Visual Studio / Rider / VS Code
 .vs/
@@ -36,3 +37,7 @@ desktop.ini
 ## Local scratch
 scratch/
 *.local.json
+
+## Claude Code: per-user permission cache. A shared .claude/settings.json is deliberately
+## still committable, should the project ever want one.
+.claude/settings.local.json
