@@ -7,6 +7,9 @@
     <RootNamespace>T4Power.Core</RootNamespace>
     <AssemblyName>T4Power.Core</AssemblyName>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Authors>Pierre-Olivier Boulant</Authors>
+    <Copyright>Copyright (C) 2026 Pierre-Olivier Boulant</Copyright>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
   </PropertyGroup>
 
   <!-- No PackageReference for named-pipe ACLs: NamedPipeServerStreamAcl.Create() is part of

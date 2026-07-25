@@ -26,6 +26,10 @@
     <Version>0.1.0</Version>
     <Product>T4Power</Product>
     <Description>Power and clock manager for NVIDIA GPUs (Tesla T4)</Description>
+    <Authors>Pierre-Olivier Boulant</Authors>
+    <Copyright>Copyright (C) 2026 Pierre-Olivier Boulant</Copyright>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/pob31/t4power</RepositoryUrl>
   </PropertyGroup>
 
   <!-- App.xaml needs no explicit item: with EnableDefaultApplicationDefinition false it is

@@ -2,34 +2,48 @@
 
 Power and clock manager for NVIDIA GPUs on Windows, built for the **Tesla T4**.
 
-Set the power envelope by hand, or let it follow what's actually running — with GPU discovery
-by UUID, a tray UI, a scriptable CLI, and a service that applies your profile at boot before
-anyone logs in.
+Hold the card at full clocks while a demanding app runs, drop it back when nothing needs it,
+or set it by hand — with GPU discovery by UUID, a tray UI, a scriptable CLI, and a service that
+applies your profile at boot before anyone logs in.
 
-## Why clocks, not just watts
+---
 
-The obvious design is a power-limit slider. On a T4 that alone does almost nothing, and it's
-worth being clear about why.
+## The one thing worth knowing
+
+The obvious design is a power-limit slider. On a T4 that alone does almost nothing, and the
+reason cuts both ways.
 
 Measured on a Tesla T4 (driver 610.74, MCDM):
 
-| State | Power limit | SM clock | Draw | Temp | P-state |
-|---|---|---|---|---|---|
-| Idle, as found | 70 W | 1590 MHz | **36.0 W** | **63 °C** | P0 |
-| Idle, `-pl 65` | 65 W | 1590 MHz | 39.1 W | 63 °C | P0 |
-| Idle, clocks locked 300–900 MHz | 65 W | 300 MHz | **~10 W** | **53 °C** | P8 |
+| Clock state | SM clock | P-state | Draw | Temp |
+|---|---|---|---|---|
+| Found idling, wedged | 1590 MHz | P0 | 36 W | 63 °C |
+| Unlocked, idle | 300 MHz | P8 | ~10 W | 52 °C |
+| Pinned 300–900 MHz | 300 MHz | P8 | ~10 W | 52 °C |
+| **Pinned 1590 MHz** | **1590 MHz** | **P0** | **34 W** | 58 °C |
 
-Two things follow:
+Two conclusions:
 
-- The T4's power limit is adjustable only across **60–70 W**, and at idle the card draws 36 W —
-  *below* the 60 W floor. So lowering the cap cannot reduce idle draw at all. It only bounds
-  sustained load.
-- The card was sitting wedged at **P0/1590 MHz with no compute process running**. Locking the
-  SM clock is what actually drops idle power (**−72%**) and temperature (**−11 °C**).
+- **The power limit is not the lever.** The T4's limit is adjustable only across **60–70 W**,
+  and at idle the card draws 36 W — *below* its own floor. Lowering the cap cannot reduce idle
+  draw at all. It only bounds sustained load.
+- **"Unlocked" does not mean fast.** It means *let the card decide*, and an idle card decides
+  P8/300 MHz. To force P0 you must pin the clock **floor** high. Equivalently:
+  `nvidia-smi -lgc 1590`.
 
-So a profile in T4Power sets **both** knobs: a power limit for sustained load, and a clock lock
-for everything else. A lock→unlock cycle also knocks the card out of a stuck P0, which the
-service does at startup when it detects that state.
+So a profile in T4Power sets **both** knobs, and the clock lock is a *pin* rather than a
+ceiling — pin high to hold P0, pin low to cut idle draw and heat.
+
+A lock→unlock cycle also knocks the card out of a stuck P0, which the service does at startup
+when it detects that state.
+
+### Why pinning matters more than power saving
+
+This was written for a real-time audio application doing its DSP on the T4. There, a card that
+idles to P8 between buffers and ramps back up on each burst is not merely slower — the
+transition shows up as an **xrun**. A pinned clock is a stable one, and stability is the point.
+
+---
 
 ## How it's put together
 
@@ -37,7 +51,8 @@ One executable, several modes:
 
 | Invocation | Runs as | Purpose |
 |---|---|---|
-| `T4Power` | you | Tray UI |
+| `T4Power` | you | Tray icon |
+| `T4Power --window` | you | Tray icon with the window open |
 | `T4Power --service` | LocalSystem | The service body — the only thing that writes to NVML |
 | `T4Power --install-service` | admin, once | Copies to Program Files and registers the service |
 | `T4Power --list` / `--status` / `--set` / … | you | CLI |
@@ -53,64 +68,74 @@ rights, but the privilege boundary is the *pipe ACL*, not the caller's token: th
 service performs the write, and a client only needs permission to ask. `--install-service`
 records the installing user's SID, and that plus `BUILTIN\Administrators` is the whole guest
 list — deliberately not `BUILTIN\Users`, which would let any account on the machine change GPU
-power. Every request is re-validated and clamped against live NVML constraints server-side.
+power. Every request is re-validated and clamped against live NVML constraints server-side,
+because anything arriving on the pipe is untrusted.
 
-## Automation
-
-The CLI is a thin pipe client, so scripts, hotkeys, and coding agents drive it unelevated:
-
-```powershell
-T4Power --list --json                     # UUIDs, ranges, capabilities
-T4Power --status --json                   # live draw / clock / temp / profile / active rule
-T4Power --profile Max --gpu T4 --for 30m  # temporary boost, auto-reverts
-T4Power --set --gpu T4 --power 70 --clocks unlock --for 45m
-T4Power --auto --gpu T4                   # drop the override, back to the rules
-
-T4Power --rules --gpu T4                  # profiles and auto-switch rules
-T4Power --watch ollama.exe blender.exe    # ramp up while these run
-T4Power --unwatch ollama.exe
-```
-
-`--for` is enforced by the service on its own tick, so an override still expires if whatever
-set it crashed or walked away. Exit codes distinguish *service down* (2) from *unknown GPU* (3)
-from *out of range* (4), so failures are actionable without parsing prose.
+---
 
 ## Profiles and rules
 
 Config lives at `C:\ProgramData\T4Power\config.json`, keyed by GPU UUID — never by index, which
 is not stable across reboots. The service is the sole writer.
 
-Defaults for a T4:
+Defaults for a T4, forming a forced-low / automatic / forced-high scale:
 
-| Profile | Power | Clocks |
-|---|---|---|
-| Eco | 60 W | locked 300–900 MHz |
-| Balanced | 70 W | locked 300–1290 MHz |
-| Max | 70 W | unlocked |
+| Profile | Power | Clocks | Effect |
+|---|---|---|---|
+| **Eco** | 60 W | pinned 300–900 MHz | ~10 W idle, coolest |
+| **Balanced** | 70 W | unlocked | card manages itself |
+| **Max** | 70 W | **pinned 1590 MHz** | held in P0, full performance |
 
 Rules pick a profile automatically, highest priority first:
 
-1. **Process name** — a named executable is running (ramps up *before* it touches the GPU).
+1. **Process name** — a named executable is running. Matched by name, so it is found wherever
+   it lives, a build output or Program Files alike. Ramps up *before* the app touches the GPU.
 2. **GPU activity** — anything holds a compute/graphics context, or utilisation is above a
    threshold. App-agnostic, so it catches workloads nobody listed.
 3. **Idle** — the catch-all.
 
 Ramp-up is immediate; ramp-down waits out a dwell period. That hysteresis is what stops the
-profile flapping between Eco and Max in the gaps between kernels.
+profile flapping between Eco and Max in the gaps between kernels, and `--status` tells you when
+a rule is merely holding:
+
+```
+profile: Max   (while any of [WFS-DIY] is running -> Max (holds 60s after it exits)
+                - holding for 15s more)
+```
 
 Other GPUs are discovered and reported but **not managed by default** — clamping someone's
 display adapter just because it enumerated would be a nasty surprise.
 
-## Building
+---
 
-Needs the .NET 10 SDK.
+## Automation
+
+The CLI is a thin pipe client, so scripts, hotkeys and coding agents drive it unelevated:
 
 ```powershell
-dotnet build                                  # or: dotnet test
-dotnet run --project src/T4Power -- --list
+T4Power --list --json                     # UUIDs, ranges, capabilities
+T4Power --status --json                   # live draw / clock / temp / profile / active rule
+T4Power --profile Max --gpu T4 --for 30m  # temporary boost, auto-reverts
+T4Power --set --gpu T4 --power 70 --clocks 1590   # pin to P0 by hand
+T4Power --auto --gpu T4                   # drop the override, back to the rules
+
+T4Power --rules --gpu T4                  # profiles and auto-switch rules
+T4Power --watch WFS-DIY.exe               # hold Max while this runs
+T4Power --unwatch WFS-DIY.exe
 ```
 
-Release build — one self-contained 72 MB exe with no runtime prerequisite:
+`--clocks` takes a single value to pin (`1590`), a range (`300-900`), or `unlock`.
+
+`--for` is enforced by the service on its own tick, so an override still expires if whatever
+set it crashed or walked away. Exit codes distinguish *service down* (2) from *unknown GPU* (3)
+from *out of range* (4), so failures are actionable without parsing prose. `--json` on every
+read verb makes the output a stable contract.
+
+---
+
+## Installing
+
+Needs the .NET 10 SDK to build; the published binary needs nothing.
 
 ```powershell
 dotnet publish src/T4Power -c Release -r win-x64 --self-contained true `
@@ -120,14 +145,44 @@ dotnet publish src/T4Power -c Release -r win-x64 --self-contained true `
 .\publish\T4Power.exe --install-service    # one UAC prompt; copies to Program Files
 ```
 
-During development, run `T4Power --service` in the foreground instead of installing — an
-installed service holds a lock on its own binaries.
+One self-contained ~73 MB exe, no runtime prerequisite. Uninstall with
+`--uninstall-service`, which stops the service, restores the default power limit and releases
+the clock lock.
+
+During development run `T4Power --service` in the foreground instead of installing — an
+installed service holds a lock on its own binaries. If an install fails with *access denied*
+while clearing the install directory, a T4Power process is still running; Windows will not
+delete a running image.
+
+```powershell
+dotnet build
+dotnet test
+dotnet run --project tools/IconGen        # regenerate the application icon
+```
+
+---
 
 ## Safety
 
-- Every write is clamped to the range NVML reports for that specific GPU.
+- Every write is clamped to the range NVML reports for that specific GPU; out-of-range requests
+  are clamped and the response says so.
 - Stopping or uninstalling the service restores the default power limit and releases clock
   locks, so the machine is never left clamped by software that isn't running.
-- A thermal guard forces Eco above a configurable temperature, outranking even a manual
-  override — the T4 is passively cooled and depends entirely on chassis airflow.
-- Logs at `C:\ProgramData\T4Power\logs\`.
+- A **thermal guard** forces Eco above a configurable temperature (85 °C by default on the T4),
+  outranking even a manual override — the card is passively cooled and depends entirely on
+  chassis airflow. Note that for a latency-sensitive workload this is itself a clock transition;
+  set `thermalGuardC` to `null` in `config.json` to disable it.
+- Logs at `C:\ProgramData\T4Power\logs\`, including install failures, which are otherwise
+  invisible because the elevated installer gets its own console.
+
+---
+
+## License
+
+Copyright (C) 2026 Pierre-Olivier Boulant.
+
+T4Power is free software: you may redistribute it and/or modify it under the terms of the
+**GNU General Public License, version 3 or later**, as published by the Free Software
+Foundation. It is distributed in the hope that it will be useful, but **without any warranty** —
+without even the implied warranty of merchantability or fitness for a particular purpose. See
+the [LICENSE](LICENSE) file, or <https://www.gnu.org/licenses/>, for the full text.

@@ -267,6 +267,11 @@ public static partial class CommandLine
             EXIT CODES
               0 ok   1 usage   2 service unavailable   3 unknown gpu   4 out of range
               5 permission denied   6 not supported   7 nvml unavailable   8 failed
+
+            T4Power {version}  Copyright (C) 2026 Pierre-Olivier Boulant
+            This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you are
+            welcome to redistribute it under the terms of the GNU General Public License,
+            version 3 or later. See <https://www.gnu.org/licenses/gpl-3.0.html>.
             """);
     }
 }
