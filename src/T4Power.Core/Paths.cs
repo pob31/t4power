@@ -16,9 +16,12 @@ public static class Paths
     public static string LogDirectory => Path.Combine(DataDirectory, "logs");
     public static string LogFile => Path.Combine(LogDirectory, "t4power.log");
 
-    /// <summary>Full path to the running executable.</summary>
+    /// <summary>
+    /// Full path to the running executable. Not <c>Assembly.Location</c>: that returns an empty
+    /// string in a single-file build, which is exactly how the release is published.
+    /// </summary>
     public static string ExecutablePath =>
-        Environment.ProcessPath ?? System.Reflection.Assembly.GetEntryAssembly()!.Location;
+        Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "T4Power.exe");
 
     /// <summary>
     /// Where the service runs from. Install copies the binaries here and registers this

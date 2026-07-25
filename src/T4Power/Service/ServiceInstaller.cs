@@ -145,6 +145,11 @@ internal static class ServiceInstaller
 
         try
         {
+            // Clear the target first. Upgrading a framework-dependent build to a single-file one
+            // otherwise leaves the old loose DLLs and a stale deps.json/runtimeconfig.json beside
+            // the new exe. Nothing user-owned lives here - config and logs are under ProgramData.
+            if (Directory.Exists(Paths.InstallDirectory)) ClearDirectory(Paths.InstallDirectory);
+
             Directory.CreateDirectory(Paths.InstallDirectory);
 
             var copied = 0;
@@ -167,6 +172,29 @@ internal static class ServiceInstaller
         {
             Console.Error.WriteLine($"error: could not copy files to {Paths.InstallDirectory}: {ex.Message}");
             return null;
+        }
+    }
+
+    /// <summary>Empties a directory, tolerating files still locked by a process that is on its
+    /// way out. Anything left behind is reported rather than failing the install outright.</summary>
+    static void ClearDirectory(string path)
+    {
+        foreach (var file in Directory.EnumerateFiles(path))
+        {
+            try { File.Delete(file); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"warning: could not remove {Path.GetFileName(file)}: {ex.Message}");
+            }
+        }
+
+        foreach (var directory in Directory.EnumerateDirectories(path))
+        {
+            try { Directory.Delete(directory, recursive: true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"warning: could not remove {Path.GetFileName(directory)}\\: {ex.Message}");
+            }
         }
     }
 

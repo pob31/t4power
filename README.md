@@ -65,6 +65,10 @@ T4Power --status --json                   # live draw / clock / temp / profile /
 T4Power --profile Max --gpu T4 --for 30m  # temporary boost, auto-reverts
 T4Power --set --gpu T4 --power 70 --clocks unlock --for 45m
 T4Power --auto --gpu T4                   # drop the override, back to the rules
+
+T4Power --rules --gpu T4                  # profiles and auto-switch rules
+T4Power --watch ollama.exe blender.exe    # ramp up while these run
+T4Power --unwatch ollama.exe
 ```
 
 `--for` is enforced by the service on its own tick, so an override still expires if whatever
@@ -106,11 +110,18 @@ dotnet build                                  # or: dotnet test
 dotnet run --project src/T4Power -- --list
 ```
 
-Release build:
+Release build — one self-contained 72 MB exe with no runtime prerequisite:
 
 ```powershell
-dotnet publish src/T4Power -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+dotnet publish src/T4Power -c Release -r win-x64 --self-contained true `
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+  -p:EnableCompressionInSingleFile=true -o publish
+
+.\publish\T4Power.exe --install-service    # one UAC prompt; copies to Program Files
 ```
+
+During development, run `T4Power --service` in the foreground instead of installing — an
+installed service holds a lock on its own binaries.
 
 ## Safety
 
