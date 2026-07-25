@@ -4,6 +4,7 @@
         xmlns:ui="clr-namespace:T4Power.Ui"
         Title="T4Power" Height="760" Width="820"
         MinHeight="420" MinWidth="700"
+        Icon="/Assets/t4power.ico"
         WindowStartupLocation="CenterScreen"
         Background="#FF1B1D22">
 

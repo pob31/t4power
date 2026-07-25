@@ -19,6 +19,9 @@ internal static class TrayIconFactory
     static readonly Color Hot = Color.FromArgb(0xD2, 0x4B, 0x4B);
     static readonly Color Off = Color.FromArgb(0x9A, 0xA0, 0xA6);
 
+    /// <summary>The T, matching the application icon so the tray and the logo read as one thing.</summary>
+    static readonly Color Letter = Color.FromArgb(0xFF, 0xCC, 0x33);
+
     /// <param name="load">Power draw as a fraction of the current cap, 0..1. Null when unknown.</param>
     /// <param name="available">False when the service is unreachable, which greys the icon.</param>
     public static Icon Create(double? load, bool available)
@@ -36,19 +39,36 @@ internal static class TrayIconFactory
                 : fraction >= 0.5 ? Mid
                 : Eco;
 
-            // Track ring.
-            using (var track = new Pen(Color.FromArgb(70, colour), 4f))
-                g.DrawEllipse(track, 3, 3, size - 7, size - 7);
+            // Same open dial as the application icon: 270 degrees with the gap at the bottom.
+            const float stroke = 4f;
+            const float inset = stroke / 2f + 1.5f;
+            var rect = new RectangleF(inset, inset, size - 2 * inset, size - 2 * inset);
+            const float start = 135f;
+            const float sweep = 270f;
 
-            // Fill proportional to load, sweeping clockwise from the top.
+            using (var track = new Pen(Color.FromArgb(80, colour), stroke)
+                   { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                g.DrawArc(track, rect, start, sweep);
+
+            // The filled portion is the live reading: draw against the cap, so the tray shows
+            // how hard the card is working, not just which profile is set.
             if (available && fraction > 0.01)
             {
-                using var arc = new Pen(colour, 4f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-                g.DrawArc(arc, 3, 3, size - 7, size - 7, -90, (float)(360 * fraction));
+                using var arc = new Pen(colour, stroke) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawArc(arc, rect, start, sweep * (float)fraction);
             }
 
-            using var centre = new SolidBrush(colour);
-            g.FillEllipse(centre, size / 2 - 4, size / 2 - 4, 8, 8);
+            // Greyed out with the rest when the service is unreachable, so a dead service is
+            // obvious at a glance rather than looking like an idle GPU.
+            using var brush = new SolidBrush(available ? Letter : Off);
+            const float barW = size * 0.40f;
+            const float barH = size * 0.12f;
+            const float stemW = size * 0.14f;
+            const float stemH = size * 0.40f;
+            const float top = size * 0.30f;
+
+            g.FillRectangle(brush, (size - barW) / 2f, top, barW, barH);
+            g.FillRectangle(brush, (size - stemW) / 2f, top, stemW, stemH);
         }
 
         // Icon.FromHandle does not own the handle, so clone and release it immediately to avoid

@@ -13,6 +13,10 @@
     <AssemblyName>T4Power</AssemblyName>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
+    <!-- Embedded in the PE so Explorer, the taskbar and the title bar have an icon.
+         Regenerate it by running the IconGen tool under tools/IconGen. -->
+    <ApplicationIcon>Assets\t4power.ico</ApplicationIcon>
+
     <!-- One exe, several modes (tray UI, service, CLI), so we need our own entry point.
          Leaving App.xaml as ApplicationDefinition would make the WPF targets generate a
          competing Main. -->
@@ -32,6 +36,11 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
     <!-- ServiceController, for querying and waiting on the service during install/uninstall. -->
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Also as a resource, so the WPF window and the tray icon can load it at runtime. -->
+    <Resource Include="Assets\t4power.ico" />
   </ItemGroup>
 
   <ItemGroup>
