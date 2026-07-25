@@ -45,6 +45,9 @@ public sealed record CommandLineOptions
     public string? ProfileName { get; init; }
     public bool Json { get; init; }
 
+    /// <summary>Open the main window on launch instead of starting minimised to the tray.</summary>
+    public bool ShowWindow { get; init; }
+
     /// <summary>
     /// Internal: the SID to grant control-pipe access during install. Carried across the UAC
     /// elevation because by the time we are elevated the current user is an administrator, not
@@ -63,6 +66,7 @@ public static partial class CommandLine
 
         var verb = Verb.Invalid;
         string? gpu = null, profile = null, error = null, aclSid = null;
+        var showWindow = false;
         double? power = null;
         ClockRequest? clocks = null;
         TimeSpan? duration = null;
@@ -89,7 +93,14 @@ public static partial class CommandLine
                 case "set": verb = Verb.Set; break;
                 case "auto": verb = Verb.Auto; break;
                 case "restore-defaults": verb = Verb.RestoreDefaults; break;
-                case "tray" or "ui": verb = Verb.TrayUi; break;
+                case "tray": verb = Verb.TrayUi; break;
+
+                case "window" or "open" or "ui":
+                    // Same tray app, but with the window up front — for launching from a
+                    // shortcut or the taskbar rather than at login.
+                    verb = Verb.TrayUi;
+                    showWindow = true;
+                    break;
                 case "help" or "h" or "?": verb = Verb.Help; break;
 
                 case "profile":
@@ -153,6 +164,7 @@ public static partial class CommandLine
             Duration = duration,
             ProfileName = profile,
             Json = json,
+            ShowWindow = showWindow,
             AclSid = aclSid,
             Error = error,
         };

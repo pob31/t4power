@@ -35,7 +35,7 @@ public static class Program
         switch (mode.Verb)
         {
             case Verb.TrayUi:
-                return Ui.TrayHost.Run();
+                return Ui.TrayHost.Run(mode.ShowWindow);
 
             case Verb.Service:
                 return Service.ServiceHost.Run(args);
