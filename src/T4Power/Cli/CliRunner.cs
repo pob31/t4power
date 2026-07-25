@@ -38,8 +38,95 @@ internal static class CliRunner
                 .ConfigureAwait(false),
             Verb.RestoreDefaults => await SendAsync(o, new IpcRequest { Command = IpcCommands.RestoreDefaults, Gpu = o.GpuSelector })
                 .ConfigureAwait(false),
+
+            Verb.Watch => await SendAsync(o, new IpcRequest
+            {
+                Command = IpcCommands.AddWatch,
+                Gpu = o.GpuSelector,
+                Profile = o.ProfileName,
+                Match = o.Match,
+            }).ConfigureAwait(false),
+
+            Verb.Unwatch => await SendAsync(o, new IpcRequest
+            {
+                Command = IpcCommands.RemoveWatch,
+                Gpu = o.GpuSelector,
+                Profile = o.ProfileName,
+                Match = o.Match,
+            }).ConfigureAwait(false),
+
+            Verb.Rules => await RulesAsync(o).ConfigureAwait(false),
+
             _ => Usage(o),
         };
+    }
+
+    /// <summary>Shows the auto-switch rules in priority order, plus the profiles they target.</summary>
+    static async Task<int> RulesAsync(CommandLineOptions o)
+    {
+        try
+        {
+            var response = await new IpcClient()
+                .SendAsync(new IpcRequest { Command = IpcCommands.GetState, Gpu = o.GpuSelector })
+                .ConfigureAwait(false);
+
+            if (!response.Ok)
+            {
+                Fail(o, response.Error ?? "the service reported a failure");
+                return response.Code;
+            }
+
+            if (o.Json)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(response.Gpus.Select(g => new
+                {
+                    uuid = g.Uuid,
+                    name = g.Name,
+                    managed = g.Managed,
+                    thermalGuardC = g.ThermalGuardC,
+                    profiles = g.Profiles.Select(p => new
+                    {
+                        name = p.Name,
+                        powerLimitW = p.PowerLimitW,
+                        lockClocks = p.LockClocks is null ? null : new { p.LockClocks.MinMhz, p.LockClocks.MaxMhz },
+                    }),
+                    rules = g.Rules.Select(r => new
+                    {
+                        type = r.Type.ToString(),
+                        profile = r.ProfileName,
+                        r.Priority,
+                        r.Enabled,
+                        r.Match,
+                        r.UtilThreshold,
+                        r.DwellSeconds,
+                    }),
+                }), Json));
+                return ExitCode.Ok;
+            }
+
+            foreach (var g in response.Gpus)
+            {
+                Console.WriteLine($"{g.Name}  [{g.Uuid}]{(g.Managed ? "" : "   (not managed)")}");
+
+                Console.WriteLine("  profiles:");
+                foreach (var p in g.Profiles)
+                    Console.WriteLine($"    {p.Name,-10} {p.Describe()}");
+
+                Console.WriteLine("  rules (highest priority first):");
+                foreach (var r in g.Rules.OrderByDescending(r => r.Priority))
+                    Console.WriteLine($"    [{r.Priority,3}] {(r.Enabled ? " " : "off")} {r.Describe()}");
+
+                if (g.ThermalGuardC is { } guard)
+                    Console.WriteLine($"  thermal guard: force Eco at or above {guard} C");
+                Console.WriteLine();
+            }
+            return ExitCode.Ok;
+        }
+        catch (Exception ex) when (ex is IpcClient.UnavailableException or IpcClient.AccessDeniedException)
+        {
+            Fail(o, ex.Message);
+            return ExitCode.ServiceUnavailable;
+        }
     }
 
     // ---- read verbs: direct NVML, no service needed -----------------------------------

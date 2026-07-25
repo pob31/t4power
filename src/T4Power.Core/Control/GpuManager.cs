@@ -255,8 +255,98 @@ public sealed class GpuManager : IDisposable
         IpcCommands.ClearOverride => ClearOverride(request),
         IpcCommands.RestoreDefaults => RestoreDefaults(request),
         IpcCommands.SetGpuConfig => SetGpuConfig(request),
+        IpcCommands.AddWatch => EditWatchlist(request, add: true),
+        IpcCommands.RemoveWatch => EditWatchlist(request, add: false),
         _ => IpcResponse.Failure($"unknown command '{request.Command}'", 1),
     };
+
+    /// <summary>
+    /// Adds or removes executable names on the process-name rule. Done service-side rather than
+    /// by round-tripping a whole config through the client, so a stale or malformed client
+    /// cannot clobber profiles it never meant to touch.
+    /// </summary>
+    IpcResponse EditWatchlist(IpcRequest request, bool add)
+    {
+        if (request.Match.Count == 0)
+            return IpcResponse.Failure("no executable names given", 1);
+
+        var devices = Select(request.Gpu, out var error);
+        if (error is not null) return error;
+
+        var names = request.Match
+            .Select(ProcessWatcher.Normalise)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .ToList();
+
+        var notes = new List<string>();
+
+        foreach (var device in devices)
+        {
+            var cfg = _config.Find(device.Uuid);
+            if (cfg is null) continue;
+
+            var target = request.Profile ?? Profile.Max;
+            if (add && cfg.FindProfile(target) is null)
+            {
+                return IpcResponse.Failure(
+                    $"{device.Info.Name} has no profile '{target}' " +
+                    $"(available: {string.Join(", ", cfg.Profiles.Select(p => p.Name))})", 1);
+            }
+
+            var rules = cfg.Rules.ToList();
+            var index = rules.FindIndex(r => r.Type == RuleType.ProcessName &&
+                                             string.Equals(r.ProfileName, target, StringComparison.OrdinalIgnoreCase));
+
+            if (index < 0)
+            {
+                if (!add)
+                {
+                    notes.Add($"{device.Info.Name}: no watchlist for '{target}'");
+                    continue;
+                }
+
+                rules.Insert(0, new Rule
+                {
+                    Type = RuleType.ProcessName,
+                    Priority = 100,
+                    ProfileName = target,
+                    Match = names,
+                    Enabled = true,
+                    DwellSeconds = 60,
+                });
+                notes.Add($"{device.Info.Name}: watching {string.Join(", ", names)} -> {target}");
+            }
+            else
+            {
+                var existing = rules[index];
+                var merged = add
+                    ? existing.Match.Union(names, StringComparer.OrdinalIgnoreCase).ToList()
+                    : existing.Match.Except(names, StringComparer.OrdinalIgnoreCase).ToList();
+
+                rules[index] = existing with
+                {
+                    Match = merged,
+                    // A rule matching nothing would fire on every tick if left enabled.
+                    Enabled = merged.Count > 0,
+                };
+
+                notes.Add(merged.Count > 0
+                    ? $"{device.Info.Name}: watching {string.Join(", ", merged)} -> {target}"
+                    : $"{device.Info.Name}: watchlist for {target} is now empty (rule disabled)");
+            }
+
+            UpdateGpuConfig(cfg with { Rules = rules });
+            _engine.Reset(device.Uuid);
+        }
+
+        Tick();
+        return new IpcResponse
+        {
+            Ok = true,
+            Message = string.Join("; ", notes),
+            Gpus = BuildState(request.Gpu).Gpus,
+        };
+    }
 
     IpcResponse BuildState(string? selector)
     {

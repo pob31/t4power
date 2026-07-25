@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Input;
 using T4Power.Core;
 using T4Power.Core.Model;
 
@@ -78,6 +79,40 @@ public partial class MainWindow : Window
         }
 
         await ReportAsync(await _link.SaveConfigAsync(config with { Managed = true }).ConfigureAwait(true));
+    }
+
+    // ---- slider / checkbox gestures --------------------------------------------------
+    //
+    // Every commit below is driven by a real user action. DragStarted/DragCompleted and Click
+    // cannot be raised by the poll loop updating a bound property, which is what keeps the UI
+    // from writing the service's own state back at it as a manual override.
+
+    void Slider_DragStarted(object sender, RoutedEventArgs e)
+    {
+        if (FindGpu(sender) is { } gpu) gpu.IsUserAdjusting = true;
+    }
+
+    async void Slider_DragCompleted(object sender, RoutedEventArgs e)
+    {
+        if (FindGpu(sender) is not { } gpu) return;
+        gpu.IsUserAdjusting = false;
+        await ReportAsync(await gpu.CommitAsync().ConfigureAwait(true));
+    }
+
+    async void Slider_KeyUp(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        // Arrow/page/home/end nudge the value without ever touching the thumb.
+        if (e.Key is not (Key.Left or Key.Right or Key.Up or Key.Down
+            or Key.PageUp or Key.PageDown or Key.Home or Key.End)) return;
+
+        if (FindGpu(sender) is not { } gpu) return;
+        await ReportAsync(await gpu.CommitAsync().ConfigureAwait(true));
+    }
+
+    async void ClockLock_Click(object sender, RoutedEventArgs e)
+    {
+        if (FindGpu(sender) is not { } gpu) return;
+        await ReportAsync(await gpu.CommitAsync().ConfigureAwait(true));
     }
 
     void InstallService_Click(object sender, RoutedEventArgs e)

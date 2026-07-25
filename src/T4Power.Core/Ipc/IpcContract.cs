@@ -34,6 +34,8 @@ public static class IpcCommands
     public const string ClearOverride = "clear-override";
     public const string RestoreDefaults = "restore-defaults";
     public const string SetGpuConfig = "set-gpu-config";
+    public const string AddWatch = "add-watch";
+    public const string RemoveWatch = "remove-watch";
 }
 
 /// <summary>
@@ -58,6 +60,9 @@ public sealed record IpcRequest
 
     /// <summary>Replacement config for one GPU, used by the rule editor.</summary>
     public GpuConfig? GpuConfig { get; init; }
+
+    /// <summary>Executable names for the watchlist commands.</summary>
+    public IReadOnlyList<string> Match { get; init; } = [];
 }
 
 /// <summary>One GPU as the service sees it: identity, live telemetry, and why it is where it is.</summary>

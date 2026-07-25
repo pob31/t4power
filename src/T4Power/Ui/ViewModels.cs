@@ -75,7 +75,12 @@ internal sealed class GpuViewModel : ObservableObject
     double _powerSliderW;
     uint _clockSliderMhz;
     bool _clockLockEnabled;
-    bool _suppressCommit;
+
+    // The last values pushed in from the service. Anything equal to these came from a sync
+    // rather than from the user, so there is nothing to send.
+    double _syncedPowerW;
+    uint _syncedClockMhz;
+    bool _syncedLockEnabled;
 
     public GpuViewModel(GpuStateDto state, ServiceLink link)
     {
@@ -134,39 +139,55 @@ internal sealed class GpuViewModel : ObservableObject
 
     // --- sliders ---
 
+    // These setters deliberately do NOT talk to the service.
+    //
+    // Committing from a two-way-bound setter is unfixably racy: WPF pushes bindings back through
+    // them after a programmatic sync, and during a multi-property update the view can push a
+    // stale value for one property while another already holds the new one. That produced
+    // overrides nobody asked for — opening the window was enough to pin the GPU out of automatic
+    // control, and a rule-driven profile change could commit a half-old, half-new state.
+    //
+    // Commits now come only from real user gestures in the view (see CommitAsync callers), which
+    // is also what gives "apply on release" rather than a write per pixel of drag.
+
     public double PowerSliderW
     {
         get => _powerSliderW;
-        set { if (Set(ref _powerSliderW, value)) Commit(); }
+        set => Set(ref _powerSliderW, value);
     }
 
     public uint ClockSliderMhz
     {
         get => _clockSliderMhz;
-        set { if (Set(ref _clockSliderMhz, value)) Commit(); }
+        set => Set(ref _clockSliderMhz, value);
     }
 
     public bool ClockLockEnabled
     {
         get => _clockLockEnabled;
-        set { if (Set(ref _clockLockEnabled, value)) Commit(); }
+        set => Set(ref _clockLockEnabled, value);
     }
 
     /// <summary>
-    /// Debounces slider input. Dragging raises a change per pixel; without this the service
-    /// would take a burst of NVML writes for a single gesture.
+    /// True while the user is dragging a slider. Suspends syncing from the service so the poll
+    /// loop does not yank the thumb out from under them.
     /// </summary>
-    void Commit()
+    public bool IsUserAdjusting { get; set; }
+
+    /// <summary>Sends the current slider values as a manual override. Called from the view in
+    /// response to a real gesture: thumb release, key press, or a checkbox click.</summary>
+    public Task<(bool Ok, string? Message)> CommitAsync()
     {
-        if (_suppressCommit) return;
-        Debounce.Run(Uuid, TimeSpan.FromMilliseconds(300), async () =>
-        {
-            await _link.ApplyAdHocAsync(
-                Uuid,
-                SupportsPowerLimit ? _powerSliderW : null,
-                _clockLockEnabled ? new Core.Model.ClockLock { MinMhz = MinClockMhz, MaxMhz = _clockSliderMhz } : null,
-                unlock: !_clockLockEnabled).ConfigureAwait(true);
-        });
+        if (MatchesSyncedState())
+            return Task.FromResult((true, (string?)null));
+
+        return _link.ApplyAdHocAsync(
+            Uuid,
+            SupportsPowerLimit ? _powerSliderW : null,
+            _clockLockEnabled
+                ? new Core.Model.ClockLock { MinMhz = MinClockMhz, MaxMhz = _clockSliderMhz }
+                : null,
+            unlock: !_clockLockEnabled);
     }
 
     public Task<(bool Ok, string? Message)> ApplyProfileAsync(string profile) =>
@@ -184,8 +205,8 @@ internal sealed class GpuViewModel : ObservableObject
         _state = state;
 
         // Only track the service's values when the user is not mid-adjustment, otherwise the
-        // slider would fight the poll loop.
-        if (!Debounce.IsPending(Uuid)) SyncSlidersFromState();
+        // poll loop would pull the slider thumb out from under the cursor.
+        if (!IsUserAdjusting) SyncSlidersFromState();
 
         foreach (var property in new[]
         {
@@ -203,8 +224,6 @@ internal sealed class GpuViewModel : ObservableObject
 
     void SyncSlidersFromState()
     {
-        _suppressCommit = true;
-
         var limit = _state.Telemetry?.PowerLimitW ?? _state.DefaultPowerLimitW;
         Set(ref _powerSliderW, Math.Clamp(limit, MinPowerW, MaxPowerW), nameof(PowerSliderW));
 
@@ -216,8 +235,17 @@ internal sealed class GpuViewModel : ObservableObject
         Set(ref _clockLockEnabled, locked is not null, nameof(ClockLockEnabled));
         Set(ref _clockSliderMhz, locked?.MaxMhz ?? MaxClockMhz, nameof(ClockSliderMhz));
 
-        _suppressCommit = false;
+        _syncedPowerW = _powerSliderW;
+        _syncedClockMhz = _clockSliderMhz;
+        _syncedLockEnabled = _clockLockEnabled;
     }
+
+    /// <summary>True when the controls still hold exactly what the service last reported, so
+    /// nothing the user did needs sending. The tolerance covers the slider's tick snapping.</summary>
+    bool MatchesSyncedState() =>
+        Math.Abs(_powerSliderW - _syncedPowerW) < 0.5
+        && _clockSliderMhz == _syncedClockMhz
+        && _clockLockEnabled == _syncedLockEnabled;
 
     Core.Model.ClockLock? ActiveProfileLock() =>
         _state.Profiles.FirstOrDefault(p =>
@@ -230,28 +258,4 @@ internal sealed class GpuViewModel : ObservableObject
         { TotalHours: < 1 } => $"{span.TotalMinutes:0}m",
         _ => $"{span.TotalHours:0.#}h",
     };
-}
-
-/// <summary>Coalesces rapid repeated calls per key, so a slider drag results in one write.</summary>
-internal static class Debounce
-{
-    static readonly Dictionary<string, System.Windows.Threading.DispatcherTimer> Timers = [];
-
-    public static bool IsPending(string key) => Timers.ContainsKey(key);
-
-    public static void Run(string key, TimeSpan delay, Func<Task> action)
-    {
-        if (Timers.TryGetValue(key, out var existing)) existing.Stop();
-
-        var timer = new System.Windows.Threading.DispatcherTimer { Interval = delay };
-        timer.Tick += async (_, _) =>
-        {
-            timer.Stop();
-            Timers.Remove(key);
-            await action().ConfigureAwait(true);
-        };
-
-        Timers[key] = timer;
-        timer.Start();
-    }
 }

@@ -15,6 +15,9 @@ public enum Verb
     Profile,
     Auto,
     RestoreDefaults,
+    Watch,
+    Unwatch,
+    Rules,
     Help,
     Invalid,
 }
@@ -48,6 +51,9 @@ public sealed record CommandLineOptions
     /// <summary>Open the main window on launch instead of starting minimised to the tray.</summary>
     public bool ShowWindow { get; init; }
 
+    /// <summary>Executable names for the watchlist verbs.</summary>
+    public IReadOnlyList<string> Match { get; init; } = [];
+
     /// <summary>
     /// Internal: the SID to grant control-pipe access during install. Carried across the UAC
     /// elevation because by the time we are elevated the current user is an administrator, not
@@ -67,6 +73,7 @@ public static partial class CommandLine
         var verb = Verb.Invalid;
         string? gpu = null, profile = null, error = null, aclSid = null;
         var showWindow = false;
+        var match = new List<string>();
         double? power = null;
         ClockRequest? clocks = null;
         TimeSpan? duration = null;
@@ -140,6 +147,18 @@ public static partial class CommandLine
                     }
                     break;
 
+                case "watch" or "unwatch":
+                    verb = a == "watch" ? Verb.Watch : Verb.Unwatch;
+                    // Accept several names in one go: --watch ollama.exe blender.exe
+                    while (i + 1 < args.Length && !args[i + 1].StartsWith('-'))
+                        match.Add(args[++i]);
+                    if (match.Count == 0) error ??= $"--{a} needs at least one executable name";
+                    break;
+
+                case "rules":
+                    verb = Verb.Rules;
+                    break;
+
                 case "acl-sid":
                     aclSid = Next("acl-sid");
                     break;
@@ -165,6 +184,7 @@ public static partial class CommandLine
             ProfileName = profile,
             Json = json,
             ShowWindow = showWindow,
+            Match = match,
             AclSid = aclSid,
             Error = error,
         };
@@ -228,6 +248,10 @@ public static partial class CommandLine
               T4Power --set [--gpu X] [--power 65] [--clocks 300-900|unlock] [--for 45m]
               T4Power --auto [--gpu X]             Drop the override, hand back to the rules
               T4Power --restore-defaults [--gpu X] Default power limit, clocks unlocked
+
+              T4Power --rules [--gpu X]            Show the auto-switch rules
+              T4Power --watch ollama.exe blender.exe [--gpu X] [--profile Max]
+              T4Power --unwatch ollama.exe [--gpu X]
 
               T4Power --install-service            Register the startup service (prompts for UAC)
               T4Power --uninstall-service          Remove it and restore GPU defaults

@@ -193,9 +193,15 @@
                       </TextBlock>
                       <TextBlock Text="Power limit" FontSize="12" />
                     </DockPanel>
+                    <!-- Commit on release / key-up only. Binding the setter straight to the
+                         service would write once per pixel of drag, and would also fire on
+                         programmatic updates from the poll loop. -->
                     <Slider Minimum="{Binding MinPowerW}" Maximum="{Binding MaxPowerW}"
                             Value="{Binding PowerSliderW, Mode=TwoWay}"
-                            TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,4,0,0" />
+                            TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,4,0,0"
+                            Thumb.DragStarted="Slider_DragStarted"
+                            Thumb.DragCompleted="Slider_DragCompleted"
+                            KeyUp="Slider_KeyUp" />
                     <TextBlock Style="{StaticResource Dim}">
                       <Run Text="{Binding MinPowerW, StringFormat={}{0:0} W, Mode=OneWay}" />
                       <Run Text=" to " />
@@ -210,13 +216,19 @@
                       <TextBlock DockPanel.Dock="Right" Style="{StaticResource Dim}">
                         <Run Text="{Binding ClockSliderMhz, StringFormat={}{0} MHz, Mode=OneWay}" />
                       </TextBlock>
+                      <!-- Click, not Checked/Unchecked: those also fire when the poll loop
+                           updates the box, which would echo the service's own state back at it. -->
                       <CheckBox Content="Lock SM clock" FontSize="12"
-                                IsChecked="{Binding ClockLockEnabled, Mode=TwoWay}" />
+                                IsChecked="{Binding ClockLockEnabled, Mode=TwoWay}"
+                                Click="ClockLock_Click" />
                     </DockPanel>
                     <Slider Minimum="{Binding MinClockMhz}" Maximum="{Binding MaxClockMhz}"
                             Value="{Binding ClockSliderMhz, Mode=TwoWay}"
                             TickFrequency="15" IsSnapToTickEnabled="True" Margin="0,4,0,0"
-                            IsEnabled="{Binding ClockLockEnabled}" />
+                            IsEnabled="{Binding ClockLockEnabled}"
+                            Thumb.DragStarted="Slider_DragStarted"
+                            Thumb.DragCompleted="Slider_DragCompleted"
+                            KeyUp="Slider_KeyUp" />
                     <TextBlock Style="{StaticResource Dim}" TextWrapping="Wrap"
                                Text="This is the knob that lowers idle draw and temperature. Unlocked, the card manages its own clocks." />
                     <TextBlock Foreground="{StaticResource Warn}" FontSize="11" Margin="0,4,0,0"
