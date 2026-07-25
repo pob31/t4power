@@ -54,7 +54,12 @@ public sealed class GpuManager : IDisposable
 
         // Discovery is by UUID, so a GPU that was moved to another slot keeps its settings and a
         // newly seen one picks up defaults.
-        _config = _store.Load().EnsureEntriesFor(_session.Devices.Select(d => d.Info));
+        var discovered = _session.Devices.ToDictionary(
+            d => d.Uuid, d => d.Info, StringComparer.OrdinalIgnoreCase);
+
+        _config = _store.Load()
+            .EnsureEntriesFor(discovered.Values)
+            .Migrate(discovered, _log.Info);
         _store.Save(_config);
 
         _log.Info($"NVML {_session.DriverVersion}, {_session.Devices.Count} GPU(s): " +

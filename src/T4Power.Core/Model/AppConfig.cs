@@ -75,7 +75,14 @@ public sealed record GpuConfig
 
 public sealed record AppConfig
 {
-    public int Version { get; init; } = 1;
+    /// <summary>
+    /// Current schema version. Bumped to 2 when the Max profile changed from "clocks unlocked"
+    /// to "clocks pinned at the top": unlocked lets an idle card sit in P8, so the old Max could
+    /// not raise performance at all.
+    /// </summary>
+    public const int CurrentVersion = 2;
+
+    public int Version { get; init; } = CurrentVersion;
 
     /// <summary>Poll interval for telemetry and rule evaluation.</summary>
     public int PollIntervalMs { get; init; } = 1000;
@@ -128,4 +135,32 @@ public sealed record AppConfig
         Gpus = Gpus.Select(g =>
             string.Equals(g.Uuid, updated.Uuid, StringComparison.OrdinalIgnoreCase) ? updated : g).ToList(),
     };
+
+    /// <summary>
+    /// Brings a config written by an older version up to date. Rules, watchlists and the managed
+    /// flag are preserved; only the stock profiles are regenerated, because a v1 config carries a
+    /// Max profile that unlocks clocks and therefore cannot raise performance.
+    ///
+    /// Profiles the user added under their own names are left alone.
+    /// </summary>
+    public AppConfig Migrate(IReadOnlyDictionary<string, GpuInfo> discovered, Action<string>? log = null)
+    {
+        if (Version >= CurrentVersion) return this;
+
+        log?.Invoke($"migrating configuration from v{Version} to v{CurrentVersion}: " +
+                    "regenerating the stock Eco/Balanced/Max profiles");
+
+        var updated = Gpus.Select(gpu =>
+        {
+            if (!discovered.TryGetValue(gpu.Uuid, out var info)) return gpu;
+
+            var stock = Profile.DefaultsFor(info);
+            var stockNames = stock.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var custom = gpu.Profiles.Where(p => !stockNames.Contains(p.Name));
+
+            return gpu with { Profiles = [.. stock, .. custom] };
+        }).ToList();
+
+        return this with { Version = CurrentVersion, Gpus = updated };
+    }
 }

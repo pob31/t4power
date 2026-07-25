@@ -69,6 +69,16 @@
       <Setter Property="FontFamily" Value="Segoe UI" />
       <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
+
+    <Style TargetType="TextBox">
+      <Setter Property="Foreground" Value="{StaticResource Fg}" />
+      <Setter Property="Background" Value="#FF1B1D22" />
+      <Setter Property="BorderBrush" Value="#FF444952" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="8,6" />
+      <Setter Property="FontFamily" Value="Segoe UI" />
+      <Setter Property="CaretBrush" Value="{StaticResource Fg}" />
+    </Style>
   </Window.Resources>
 
   <Grid>
@@ -218,7 +228,7 @@
                       </TextBlock>
                       <!-- Click, not Checked/Unchecked: those also fire when the poll loop
                            updates the box, which would echo the service's own state back at it. -->
-                      <CheckBox Content="Lock SM clock" FontSize="12"
+                      <CheckBox Content="Pin SM clock" FontSize="12"
                                 IsChecked="{Binding ClockLockEnabled, Mode=TwoWay}"
                                 Click="ClockLock_Click" />
                     </DockPanel>
@@ -230,10 +240,49 @@
                             Thumb.DragCompleted="Slider_DragCompleted"
                             KeyUp="Slider_KeyUp" />
                     <TextBlock Style="{StaticResource Dim}" TextWrapping="Wrap"
-                               Text="This is the knob that lowers idle draw and temperature. Unlocked, the card manages its own clocks." />
+                               Text="Holds the clock at exactly this value. Pin at the maximum to force P0 and keep performance steady; pin low to cut idle draw and heat. Unpinned, the card manages itself and drops to P8 when idle." />
                     <TextBlock Foreground="{StaticResource Warn}" FontSize="11" Margin="0,4,0,0"
                                Text="This GPU refused a clock lock; only the power limit applies."
                                Visibility="{Binding ClockLockRefused, Converter={StaticResource BoolToVis}}" />
+                  </StackPanel>
+
+                  <!-- Watchlist: the auto-switch rule users actually need to configure -->
+                  <StackPanel Margin="0,20,0,0">
+                    <TextBlock FontSize="12">
+                      <Run Text="Hold" />
+                      <Run Text="{Binding WatchTargetProfile, Mode=OneWay}" FontWeight="SemiBold" />
+                      <Run Text="while these apps are running" />
+                    </TextBlock>
+                    <TextBlock Style="{StaticResource Dim}" TextWrapping="Wrap" Margin="0,2,0,0"
+                               Text="Matched by executable name, so it is found wherever it lives — a build output or Program Files alike. The card ramps up before the app touches the GPU, and holds until it exits." />
+
+                    <ItemsControl ItemsSource="{Binding WatchedApps}" Margin="0,8,0,0"
+                                  Visibility="{Binding HasWatchedApps, Converter={StaticResource BoolToVis}}">
+                      <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                      </ItemsControl.ItemsPanel>
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Border Background="#FF31353E" CornerRadius="12" Padding="10,4"
+                                  Margin="0,0,6,6">
+                            <DockPanel>
+                              <Button DockPanel.Dock="Right" Content="✕" Margin="8,0,0,0"
+                                      Padding="4,0" BorderThickness="0" Background="Transparent"
+                                      ToolTip="Stop watching this app"
+                                      Click="RemoveWatch_Click" />
+                              <TextBlock Text="{Binding}" FontSize="12" VerticalAlignment="Center" />
+                            </DockPanel>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <DockPanel Margin="0,6,0,0">
+                      <Button DockPanel.Dock="Right" Content="Add" Margin="6,0,0,0"
+                              Click="AddWatch_Click" />
+                      <TextBox Text="{Binding NewAppName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                               KeyDown="NewApp_KeyDown" />
+                    </DockPanel>
                   </StackPanel>
 
                 </StackPanel>

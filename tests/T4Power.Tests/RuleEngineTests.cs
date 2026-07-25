@@ -394,20 +394,98 @@ public class GpuInfoTests
         Assert.Equal(300u, eco.LockClocks!.MinMhz);
         Assert.Equal(900u, eco.LockClocks.MaxMhz);
 
-        var max = profiles.Single(p => p.Name == Profile.Max);
-        Assert.Equal(70, max.PowerLimitW);
-        Assert.Null(max.LockClocks);              // unlocked: full 1590 MHz available
+        // Balanced is the "let the card decide" middle: unlocked, full power ceiling.
+        var balanced = profiles.Single(p => p.Name == Profile.Balanced);
+        Assert.Equal(70, balanced.PowerLimitW);
+        Assert.Null(balanced.LockClocks);
     }
 
     [Fact]
-    public void Non_T4_gpus_get_power_only_profiles_and_are_unmanaged_by_default()
+    public void Max_pins_the_clock_floor_at_the_top_so_the_card_is_held_in_P0()
     {
-        var consumer = T4 with { Name = "NVIDIA GeForce RTX 5070", Uuid = "GPU-0909", MinPowerLimitW = 175, MaxPowerLimitW = 275 };
+        var max = Profile.DefaultsForT4(T4).Single(p => p.Name == Profile.Max);
+
+        Assert.Equal(70, max.PowerLimitW);
+
+        // Unlocking cannot raise anything: it means "let the card decide", and an idle card
+        // decides P8/300 MHz. Only pinning the FLOOR high holds it in P0 - which is what a
+        // real-time workload needs, since every clock transition is a chance to glitch.
+        Assert.NotNull(max.LockClocks);
+        Assert.Equal(1590u, max.LockClocks!.MinMhz);
+        Assert.Equal(1590u, max.LockClocks.MaxMhz);
+    }
+
+    [Fact]
+    public void Migration_replaces_a_v1_Max_that_could_never_raise_performance()
+    {
+        // A v1 config: Max unlocks clocks, so applying it left an idle card in P8.
+        var stale = new AppConfig
+        {
+            Version = 1,
+            Gpus =
+            [
+                new GpuConfig
+                {
+                    Uuid = T4.Uuid,
+                    Managed = true,
+                    Profiles =
+                    [
+                        new Profile { Name = Profile.Max, PowerLimitW = 70, LockClocks = null },
+                        new Profile { Name = "MyCustom", PowerLimitW = 65, LockClocks = null },
+                    ],
+                    Rules = [new Rule { Type = RuleType.ProcessName, ProfileName = Profile.Max, Match = ["audio.exe"] }],
+                },
+            ],
+        };
+
+        var migrated = stale.Migrate(new Dictionary<string, GpuInfo> { [T4.Uuid] = T4 });
+
+        Assert.Equal(AppConfig.CurrentVersion, migrated.Version);
+
+        var gpu = migrated.Gpus.Single();
+        var max = gpu.Profiles.Single(p => p.Name == Profile.Max);
+        Assert.Equal(1590u, max.LockClocks?.MinMhz);
+
+        // The user's own profile and their watchlist must survive the migration.
+        Assert.Contains(gpu.Profiles, p => p.Name == "MyCustom");
+        Assert.Contains("audio.exe", gpu.Rules.Single().Match);
+    }
+
+    [Fact]
+    public void Migration_leaves_an_up_to_date_config_alone()
+    {
+        var current = new AppConfig { Version = AppConfig.CurrentVersion };
+        Assert.Same(current, current.Migrate(new Dictionary<string, GpuInfo>()));
+    }
+
+    [Fact]
+    public void Non_T4_gpus_are_unmanaged_by_default_and_only_Max_pins_their_clocks()
+    {
+        var consumer = T4 with
+        {
+            Name = "NVIDIA GeForce RTX 5070",
+            Uuid = "GPU-0909",
+            MinPowerLimitW = 175,
+            MaxPowerLimitW = 275,
+        };
 
         Assert.False(consumer.IsTeslaT4);
-        // Locking clocks on a display GPU would hurt desktop responsiveness for no benefit.
-        Assert.All(Profile.DefaultsForGeneric(consumer), p => Assert.Null(p.LockClocks));
+
+        // Clamping someone's display adapter uninvited would be a nasty surprise.
         Assert.False(GpuConfig.CreateDefault(consumer).Managed);
+
+        var profiles = Profile.DefaultsForGeneric(consumer);
+
+        // Eco and Balanced leave clocks alone: a consumer card idles down fine by itself, and
+        // pinning a display adapter low would hurt desktop responsiveness for no benefit.
+        Assert.Null(profiles.Single(p => p.Name == Profile.Eco).LockClocks);
+        Assert.Null(profiles.Single(p => p.Name == Profile.Balanced).LockClocks);
+
+        // Max still pins, for the same reason as on the T4: a card that idles to P8 between
+        // bursts has to ramp each time, and that ramp is what a latency-sensitive workload hears.
+        var max = profiles.Single(p => p.Name == Profile.Max);
+        Assert.Equal(consumer.MaxGraphicsClockMhz, max.LockClocks?.MinMhz);
+        Assert.Equal(consumer.MaxGraphicsClockMhz, max.LockClocks?.MaxMhz);
     }
 }
 

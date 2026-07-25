@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using T4Power.Core.Ipc;
+using T4Power.Core.Model;
 using T4Power.Core.Rules;
 
 namespace T4Power.Ui;
@@ -184,11 +185,66 @@ internal sealed class GpuViewModel : ObservableObject
         return _link.ApplyAdHocAsync(
             Uuid,
             SupportsPowerLimit ? _powerSliderW : null,
+            // Floor and ceiling both at the slider value: a *pin*, not a ceiling. A ceiling
+            // cannot raise anything - locking 300-1590 is the card's whole range and restricts
+            // nothing, while an idle card still parks itself at 300 MHz. Pinning 1590 is what
+            // holds it in P0, and pinning 300 is what holds it down.
             _clockLockEnabled
-                ? new Core.Model.ClockLock { MinMhz = MinClockMhz, MaxMhz = _clockSliderMhz }
+                ? new Core.Model.ClockLock { MinMhz = _clockSliderMhz, MaxMhz = _clockSliderMhz }
                 : null,
             unlock: !_clockLockEnabled);
     }
+
+    /// <summary>
+    /// Called when the user ticks the pin box. Coming from unlocked, the slider sits at the
+    /// maximum, and pinning there is usually what is wanted (it forces P0). Coming from a
+    /// profile that pinned a specific clock, that value is already loaded.
+    /// </summary>
+    public void OnPinToggled()
+    {
+        if (_clockLockEnabled && _clockSliderMhz == 0)
+            Set(ref _clockSliderMhz, MaxClockMhz, nameof(ClockSliderMhz));
+    }
+
+    // ---- watchlist -------------------------------------------------------------------
+
+    /// <summary>Executables that ramp this GPU up while they run. Matched by process name, so
+    /// the app is found wherever it lives — a build output or Program Files alike.</summary>
+    public IReadOnlyList<string> WatchedApps =>
+        _state.Rules
+            .Where(r => r.Type == RuleType.ProcessName)
+            .SelectMany(r => r.Match)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    public bool HasWatchedApps => WatchedApps.Count > 0;
+
+    string _newAppName = "";
+    public string NewAppName
+    {
+        get => _newAppName;
+        set => Set(ref _newAppName, value);
+    }
+
+    /// <summary>The profile a watchlist entry targets. Max is the point of the feature: hold
+    /// the card at full clocks for as long as the app is running.</summary>
+    public string WatchTargetProfile =>
+        _state.Rules.FirstOrDefault(r => r.Type == RuleType.ProcessName)?.ProfileName
+        ?? Core.Model.Profile.Max;
+
+    public async Task<(bool Ok, string? Message)> AddWatchAsync()
+    {
+        var name = NewAppName.Trim();
+        if (name.Length == 0) return (false, "type an executable name first, e.g. WFS-DIY.exe");
+
+        var result = await _link.AddWatchAsync(Uuid, name, WatchTargetProfile).ConfigureAwait(true);
+        if (result.Ok) NewAppName = "";
+        return result;
+    }
+
+    public Task<(bool Ok, string? Message)> RemoveWatchAsync(string exe) =>
+        _link.RemoveWatchAsync(Uuid, exe, WatchTargetProfile);
 
     public Task<(bool Ok, string? Message)> ApplyProfileAsync(string profile) =>
         _link.ApplyProfileAsync(Uuid, profile);
@@ -215,7 +271,7 @@ internal sealed class GpuViewModel : ObservableObject
             nameof(ClockText), nameof(TempText), nameof(UtilText), nameof(PStateText),
             nameof(ActivityText), nameof(ThrottleText), nameof(HasThrottle),
             nameof(OverrideExpiryText), nameof(HasOverrideExpiry), nameof(ProfileNames),
-            nameof(ClockLockRefused),
+            nameof(ClockLockRefused), nameof(WatchedApps), nameof(HasWatchedApps),
         })
         {
             Raise(property);
@@ -233,7 +289,10 @@ internal sealed class GpuViewModel : ObservableObject
         var locked = _state.Override?.LockClocks ?? ActiveProfileLock();
 
         Set(ref _clockLockEnabled, locked is not null, nameof(ClockLockEnabled));
-        Set(ref _clockSliderMhz, locked?.MaxMhz ?? MaxClockMhz, nameof(ClockSliderMhz));
+
+        // Show the floor: that is what determines the p-state the card settles into. A profile
+        // pinning 1590-1590 reads as 1590 (P0); Eco's 300-900 reads as 300 (P8).
+        Set(ref _clockSliderMhz, locked?.MinMhz ?? MaxClockMhz, nameof(ClockSliderMhz));
 
         _syncedPowerW = _powerSliderW;
         _syncedClockMhz = _clockSliderMhz;

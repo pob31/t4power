@@ -112,7 +112,31 @@ public partial class MainWindow : Window
     async void ClockLock_Click(object sender, RoutedEventArgs e)
     {
         if (FindGpu(sender) is not { } gpu) return;
+        gpu.OnPinToggled();
         await ReportAsync(await gpu.CommitAsync().ConfigureAwait(true));
+    }
+
+    // ---- watchlist -------------------------------------------------------------------
+
+    async void AddWatch_Click(object sender, RoutedEventArgs e)
+    {
+        if (FindGpu(sender) is not { } gpu) return;
+        await ReportAsync(await gpu.AddWatchAsync().ConfigureAwait(true));
+    }
+
+    async void NewApp_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        if (FindGpu(sender) is not { } gpu) return;
+        await ReportAsync(await gpu.AddWatchAsync().ConfigureAwait(true));
+    }
+
+    async void RemoveWatch_Click(object sender, RoutedEventArgs e)
+    {
+        // The chip's DataContext is the executable name; the GPU is further up the tree.
+        if (sender is not FrameworkElement { DataContext: string exe }) return;
+        if (FindGpu(sender) is not { } gpu) return;
+        await ReportAsync(await gpu.RemoveWatchAsync(exe).ConfigureAwait(true));
     }
 
     void InstallService_Click(object sender, RoutedEventArgs e)

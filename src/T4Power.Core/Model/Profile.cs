@@ -30,17 +30,28 @@ public sealed record Profile
         return $"{power}, {clocks}";
     }
 
-    // --- Defaults, from the measured spike on this machine ---
-    // Baseline (unlocked, P0): 36 W / 63 C at idle.
-    // Locked to 300-900 MHz:   ~10 W / 52 C at idle.
+    // --- Defaults, from measurements on a Tesla T4 (driver 610.74, MCDM) ---
+    //
+    // Unlocked        -> 300 MHz, P8,  ~10 W   (an idle card parks itself at the bottom)
+    // Pinned 300-900  -> 300 MHz, P8,  ~10 W,  53 C
+    // Pinned 1590     -> 1590 MHz, P0,  34 W,  53 C
+    //
+    // The important lesson is that "unlocked" cannot raise anything. It means "let the card
+    // decide", and an idle card decides P8. Forcing P0 requires pinning the clock FLOOR high,
+    // which is what Max does.
 
     public const string Eco = "Eco";
     public const string Balanced = "Balanced";
     public const string Max = "Max";
 
     /// <summary>
-    /// Default profiles for a T4. Eco exists to fix the card idling at P0/1590 MHz; Max releases
-    /// the lock entirely so a workload gets the full 1590 MHz and 70 W.
+    /// Default profiles for a T4, forming a forced-low / automatic / forced-high scale:
+    /// <list type="bullet">
+    ///   <item><b>Eco</b> caps clocks low, for minimum idle draw and heat.</item>
+    ///   <item><b>Balanced</b> unlocks and lets the card manage itself.</item>
+    ///   <item><b>Max</b> pins clocks at the top, holding the card in P0 so a workload gets
+    ///   full performance immediately rather than waiting for the card to ramp.</item>
+    /// </list>
     /// </summary>
     public static IReadOnlyList<Profile> DefaultsForT4(GpuInfo info) =>
     [
@@ -54,20 +65,29 @@ public sealed record Profile
         {
             Name = Balanced,
             PowerLimitW = info.MaxPowerLimitW,
-            LockClocks = new ClockLock { MinMhz = info.MinGraphicsClockMhz, MaxMhz = info.SnapClock(1290) },
+            LockClocks = null,
         },
         new Profile
         {
             Name = Max,
             PowerLimitW = info.MaxPowerLimitW,
-            LockClocks = null,
+            // Floor and ceiling both at the top: this is what pins the card in P0.
+            LockClocks = new ClockLock
+            {
+                MinMhz = info.MaxGraphicsClockMhz,
+                MaxMhz = info.MaxGraphicsClockMhz,
+            },
         },
     ];
 
     /// <summary>
-    /// Defaults for any other GPU. A consumer card already idles properly on its own, so the
-    /// Eco profile only trims the power ceiling rather than pinning clocks — locking clocks on
-    /// a display GPU would hurt desktop responsiveness for no benefit.
+    /// Defaults for any other GPU. Eco and Balanced leave clocks alone — a consumer card idles
+    /// down perfectly well by itself, and pinning a display adapter low would hurt desktop
+    /// responsiveness for no benefit.
+    ///
+    /// Max still pins the clock at the top, for the same reason as on the T4: a card that idles
+    /// to P8 between bursts of work has to ramp back up each time, and for a latency-sensitive
+    /// workload that ramp is exactly what shows up as a glitch.
     /// </summary>
     public static IReadOnlyList<Profile> DefaultsForGeneric(GpuInfo info) =>
     [
@@ -78,7 +98,14 @@ public sealed record Profile
             PowerLimitW = Math.Round((info.MinPowerLimitW + info.MaxPowerLimitW) / 2),
             LockClocks = null,
         },
-        new Profile { Name = Max, PowerLimitW = info.MaxPowerLimitW, LockClocks = null },
+        new Profile
+        {
+            Name = Max,
+            PowerLimitW = info.MaxPowerLimitW,
+            LockClocks = info.MaxGraphicsClockMhz > 0
+                ? new ClockLock { MinMhz = info.MaxGraphicsClockMhz, MaxMhz = info.MaxGraphicsClockMhz }
+                : null,
+        },
     ];
 
     public static IReadOnlyList<Profile> DefaultsFor(GpuInfo info) =>

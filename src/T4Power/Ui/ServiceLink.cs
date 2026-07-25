@@ -108,6 +108,24 @@ internal sealed class ServiceLink : IDisposable
     public Task<(bool Ok, string? Message)> RestoreDefaultsAsync(string uuid) =>
         SendAsync(new IpcRequest { Command = IpcCommands.RestoreDefaults, Gpu = uuid });
 
+    public Task<(bool Ok, string? Message)> AddWatchAsync(string uuid, string exe, string profile) =>
+        SendAsync(new IpcRequest
+        {
+            Command = IpcCommands.AddWatch,
+            Gpu = uuid,
+            Profile = profile,
+            Match = [exe],
+        });
+
+    public Task<(bool Ok, string? Message)> RemoveWatchAsync(string uuid, string exe, string profile) =>
+        SendAsync(new IpcRequest
+        {
+            Command = IpcCommands.RemoveWatch,
+            Gpu = uuid,
+            Profile = profile,
+            Match = [exe],
+        });
+
     public Task<(bool Ok, string? Message)> SaveConfigAsync(GpuConfig config) =>
         SendAsync(new IpcRequest { Command = IpcCommands.SetGpuConfig, GpuConfig = config });
 

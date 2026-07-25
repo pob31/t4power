@@ -148,7 +148,13 @@ internal static class ServiceInstaller
             // Clear the target first. Upgrading a framework-dependent build to a single-file one
             // otherwise leaves the old loose DLLs and a stale deps.json/runtimeconfig.json beside
             // the new exe. Nothing user-owned lives here - config and logs are under ProgramData.
-            if (Directory.Exists(Paths.InstallDirectory)) ClearDirectory(Paths.InstallDirectory);
+            if (Directory.Exists(Paths.InstallDirectory) && !ClearDirectory(Paths.InstallDirectory))
+            {
+                Console.Error.WriteLine(
+                    "error: could not clear the install directory. Is T4Power still running? " +
+                    "Close the tray icon and try again.");
+                return null;
+            }
 
             Directory.CreateDirectory(Paths.InstallDirectory);
 
@@ -161,7 +167,8 @@ internal static class ServiceInstaller
                 var relative = Path.GetRelativePath(source, file);
                 var target = Path.Combine(Paths.InstallDirectory, relative);
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                File.Copy(file, target, overwrite: true);
+
+                if (!WithRetry(() => File.Copy(file, target, overwrite: true), relative)) return null;
                 copied++;
             }
 
@@ -175,27 +182,46 @@ internal static class ServiceInstaller
         }
     }
 
-    /// <summary>Empties a directory, tolerating files still locked by a process that is on its
-    /// way out. Anything left behind is reported rather than failing the install outright.</summary>
-    static void ClearDirectory(string path)
+    /// <summary>
+    /// Retries a file operation while the target is locked.
+    ///
+    /// The service control manager reports Stopped as soon as the service says so, but the
+    /// process takes a moment longer to exit and release the handle on its own executable.
+    /// Without this, reinstalling over a running install fails on the very first delete.
+    /// </summary>
+    static bool WithRetry(Action action, string what, int attempts = 20)
     {
-        foreach (var file in Directory.EnumerateFiles(path))
+        for (var attempt = 1; ; attempt++)
         {
-            try { File.Delete(file); }
+            try
+            {
+                action();
+                return true;
+            }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                Console.Error.WriteLine($"warning: could not remove {Path.GetFileName(file)}: {ex.Message}");
+                if (attempt >= attempts)
+                {
+                    Console.Error.WriteLine($"error: {what} is still locked after {attempts} attempts: {ex.Message}");
+                    return false;
+                }
+                Thread.Sleep(250);
             }
         }
+    }
+
+    /// <summary>Empties a directory, waiting out any handles a just-stopped service still holds.</summary>
+    static bool ClearDirectory(string path)
+    {
+        var ok = true;
+
+        foreach (var file in Directory.EnumerateFiles(path))
+            ok &= WithRetry(() => File.Delete(file), Path.GetFileName(file));
 
         foreach (var directory in Directory.EnumerateDirectories(path))
-        {
-            try { Directory.Delete(directory, recursive: true); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                Console.Error.WriteLine($"warning: could not remove {Path.GetFileName(directory)}\\: {ex.Message}");
-            }
-        }
+            ok &= WithRetry(() => Directory.Delete(directory, recursive: true), Path.GetFileName(directory));
+
+        return ok;
     }
 
     // ---- elevation -------------------------------------------------------------------
